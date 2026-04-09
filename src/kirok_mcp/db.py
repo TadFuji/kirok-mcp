@@ -83,28 +83,28 @@ def _resolve_db_path(db_path: str | Path | None) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
-    KIROK_dir = Path.home() / ".Kirok"
-    KIROK_db = KIROK_dir / "memory.db"
+    kirok_dir = Path.home() / ".kirok"
+    kirok_db = kirok_dir / "memory.db"
     legacy_dir = Path.home() / ".hindsight"
     legacy_db = legacy_dir / "memory.db"
 
-    if KIROK_db.exists():
-        return KIROK_db
+    if kirok_db.exists():
+        return kirok_db
 
     # Auto-migrate from legacy location
     if legacy_db.exists():
-        KIROK_dir.mkdir(parents=True, exist_ok=True)
+        kirok_dir.mkdir(parents=True, exist_ok=True)
         logger.info(
             "Migrating database from %s to %s",
-            legacy_db, KIROK_db,
+            legacy_db, kirok_db,
         )
-        shutil.copy2(str(legacy_db), str(KIROK_db))
+        shutil.copy2(str(legacy_db), str(kirok_db))
         logger.info("Migration complete. Original database preserved at %s", legacy_db)
-        return KIROK_db
+        return kirok_db
 
     # Fresh install — create new
-    KIROK_dir.mkdir(parents=True, exist_ok=True)
-    return KIROK_db
+    kirok_dir.mkdir(parents=True, exist_ok=True)
+    return kirok_db
 
 
 class MemoryDB:
