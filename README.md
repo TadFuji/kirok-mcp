@@ -10,6 +10,8 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
 
+🇬🇧 English | **[🇯🇵 日本語はこちら](docs/README_ja.md)**
+
 </div>
 
 ---
