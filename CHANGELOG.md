@@ -15,7 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Mental Models**: LLM-generated insights with optional auto-refresh
 - **Smart Retain**: Importance-scored ingestion for bulk/automatic content
 - **Bank Configuration**: Per-bank retain and observations missions
-- **17 MCP tools**: Full CRUD for memories, mental models, observations, and bank management
-- **Automatic DB migration**: Seamless upgrade from `~/.hindsight/` to `~/.kirok/`
+- **19 MCP tools**: Full CRUD for memories, mental models, observations, and bank management
 - **FTS5 query sanitization**: Safe handling of special characters in search queries
 - **MIT License**: Open-source under the MIT License
