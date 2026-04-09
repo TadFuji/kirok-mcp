@@ -1,6 +1,6 @@
 # Tools Reference
 
-Complete documentation for all 17 Kirok MCP tools.
+Complete documentation for all 19 Kirok MCP tools.
 
 ---
 

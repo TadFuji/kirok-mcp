@@ -21,7 +21,7 @@ Google Gemini API
 ### 1. Server (`server.py`)
 
 The main entry point. Built on [FastMCP](https://github.com/jlowin/fastmcp), it:
-- Registers 17 MCP tools
+- Registers 19 MCP tools
 - Initializes database, embedding, and LLM clients as module-level singletons
 - Manages the Retain-Recall-Reflect lifecycle
 - Orchestrates observation consolidation
