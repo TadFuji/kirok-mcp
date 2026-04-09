@@ -1,17 +1,17 @@
 # Architecture
 
-This document describes the internal architecture of Kiroku, a persistent memory system for AI agents.
+This document describes the internal architecture of Kirok, a persistent memory system for AI agents.
 
 ## System Overview
 
-Kiroku is a **Model Context Protocol (MCP) server** that provides AI agents with persistent, searchable memory. It runs as a local process and communicates with MCP clients via the stdio transport.
+Kirok is a **Model Context Protocol (MCP) server** that provides AI agents with persistent, searchable memory. It runs as a local process and communicates with MCP clients via the stdio transport.
 
 ```
 MCP Client (Claude, Antigravity, etc.)
     ↕ stdin/stdout (JSON-RPC 2.0)
-Kiroku MCP Server (FastMCP)
+Kirok MCP Server (FastMCP)
     ↕
-SQLite Database (~/.kiroku/memory.db)
+SQLite Database (~/.kirok/memory.db)
     ↕ (API calls for embeddings & LLM)
 Google Gemini API
 ```

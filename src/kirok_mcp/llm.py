@@ -15,7 +15,7 @@ from google import genai
 
 LLM_MODEL = "gemini-2.5-flash-lite"
 
-logger = logging.getLogger("kiroku.llm")
+logger = logging.getLogger("kirok.llm")
 
 
 def _to_str_list(items: list) -> list[str]:

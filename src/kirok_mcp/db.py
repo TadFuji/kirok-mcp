@@ -1,4 +1,4 @@
-"""SQLite database layer for Kiroku memory storage.
+"""SQLite database layer for Kirok memory storage.
 
 Manages memories, mental models, observations, bank configs, and
 FTS5 full-text search indexes. Vectors are stored as binary blobs
@@ -18,7 +18,7 @@ from uuid import uuid4
 import re
 
 
-logger = logging.getLogger("kiroku.db")
+logger = logging.getLogger("kirok.db")
 
 
 def _serialize_vector(vector: list[float]) -> bytes:
@@ -74,37 +74,37 @@ def _resolve_db_path(db_path: str | Path | None) -> Path:
 
     Priority:
     1. Explicit db_path argument (if provided)
-    2. ~/.kiroku/memory.db (new default)
-    3. If ~/.kiroku/ doesn't exist but ~/.hindsight/memory.db does,
-       automatically copy it to ~/.kiroku/ for seamless migration.
+    2. ~/.kirok/memory.db (new default)
+    3. If ~/.kirok/ doesn't exist but ~/.hindsight/memory.db does,
+       automatically copy it to ~/.kirok/ for seamless migration.
     """
     if db_path is not None:
         path = Path(db_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
-    kiroku_dir = Path.home() / ".kiroku"
-    kiroku_db = kiroku_dir / "memory.db"
+    KIROK_dir = Path.home() / ".Kirok"
+    KIROK_db = KIROK_dir / "memory.db"
     legacy_dir = Path.home() / ".hindsight"
     legacy_db = legacy_dir / "memory.db"
 
-    if kiroku_db.exists():
-        return kiroku_db
+    if KIROK_db.exists():
+        return KIROK_db
 
     # Auto-migrate from legacy location
     if legacy_db.exists():
-        kiroku_dir.mkdir(parents=True, exist_ok=True)
+        KIROK_dir.mkdir(parents=True, exist_ok=True)
         logger.info(
             "Migrating database from %s to %s",
-            legacy_db, kiroku_db,
+            legacy_db, KIROK_db,
         )
-        shutil.copy2(str(legacy_db), str(kiroku_db))
+        shutil.copy2(str(legacy_db), str(KIROK_db))
         logger.info("Migration complete. Original database preserved at %s", legacy_db)
-        return kiroku_db
+        return KIROK_db
 
     # Fresh install — create new
-    kiroku_dir.mkdir(parents=True, exist_ok=True)
-    return kiroku_db
+    KIROK_dir.mkdir(parents=True, exist_ok=True)
+    return KIROK_db
 
 
 class MemoryDB:

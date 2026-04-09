@@ -1,4 +1,4 @@
-"""Gemini Embedding API wrapper for Kiroku memory vectors.
+"""Gemini Embedding API wrapper for Kirok memory vectors.
 
 Uses gemini-embedding-001 model for text embedding generation
 and provides cosine similarity utilities for vector search.

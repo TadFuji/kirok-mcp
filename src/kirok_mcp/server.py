@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kiroku Memory MCP Server.
+"""Kirok Memory MCP Server.
 
 An agent memory system with Retain/Recall/Reflect operations,
 plus autonomous learning via Observation Consolidation.
@@ -16,13 +16,13 @@ import sys
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from kiroku_mcp.db import MemoryDB
-from kiroku_mcp.embeddings import (
+from kirok_mcp.db import MemoryDB
+from kirok_mcp.embeddings import (
     EmbeddingClient,
     reciprocal_rank_fusion,
     semantic_search,
 )
-from kiroku_mcp.llm import LLMClient
+from kirok_mcp.llm import LLMClient
 
 # ── Load environment ──────────────────────────────────────────────────
 
@@ -31,9 +31,9 @@ _project_dir = os.path.dirname(os.path.dirname(_pkg_dir))
 load_dotenv(os.path.join(_project_dir, ".env"))
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-DB_PATH = os.environ.get("KIROKU_DB_PATH", None)
-REFLECT_TIMEOUT = int(os.environ.get("KIROKU_REFLECT_TIMEOUT", "300"))
-CONSOLIDATION_TIMEOUT = int(os.environ.get("KIROKU_CONSOLIDATION_TIMEOUT", "120"))
+DB_PATH = os.environ.get("KIROK_DB_PATH", None)
+REFLECT_TIMEOUT = int(os.environ.get("KIROK_REFLECT_TIMEOUT", "300"))
+CONSOLIDATION_TIMEOUT = int(os.environ.get("KIROK_CONSOLIDATION_TIMEOUT", "120"))
 
 if not GEMINI_API_KEY:
     print("ERROR: GEMINI_API_KEY environment variable is required.", file=sys.stderr)
@@ -42,7 +42,7 @@ if not GEMINI_API_KEY:
 # ── Logging ───────────────────────────────────────────────────────────
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s: %(message)s")
-logger = logging.getLogger("kiroku.server")
+logger = logging.getLogger("kirok.server")
 
 # ── Module-level singletons ──────────────────────────────────────────
 
@@ -53,13 +53,13 @@ atexit.register(_db.close)
 _embedder = EmbeddingClient(api_key=GEMINI_API_KEY)
 _llm = LLMClient(api_key=GEMINI_API_KEY)
 
-mcp = FastMCP("kiroku_mcp")
+mcp = FastMCP("kirok_mcp")
 
 
 # ── Internal: Deduplication Threshold ─────────────────────────────────
 
 DEDUP_SIMILARITY_THRESHOLD = float(
-    os.environ.get("KIROKU_DEDUP_THRESHOLD", "0.85")
+    os.environ.get("KIROK_DEDUP_THRESHOLD", "0.85")
 )
 
 
@@ -180,7 +180,7 @@ async def _run_consolidation(bank_id: str) -> str:
 # ── Tool: Retain ──────────────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_retain(
+async def KIROK_retain(
     bank_id: str,
     content: str,
     context: str = "",
@@ -317,7 +317,7 @@ async def kiroku_retain(
 # ── Tool: Smart Retain ────────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_smart_retain(
+async def KIROK_smart_retain(
     bank_id: str,
     content: str,
     context: str = "",
@@ -380,7 +380,7 @@ async def kiroku_smart_retain(
 # ── Tool: Recall ──────────────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_recall(
+async def KIROK_recall(
     bank_id: str,
     query: str,
     limit: int = 10,
@@ -480,7 +480,7 @@ async def kiroku_recall(
 # ── Tool: Reflect ─────────────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_reflect(
+async def KIROK_reflect(
     bank_id: str,
     query: str,
     limit: int = 20,
@@ -520,7 +520,7 @@ async def kiroku_reflect(
             f"Reflect operation timed out after {REFLECT_TIMEOUT} seconds.\n"
             f"Consider reducing the number of memories (current limit: {limit}) "
             f"or simplifying the query.\n"
-            f"Timeout can be configured via KIROKU_REFLECT_TIMEOUT env var."
+            f"Timeout can be configured via KIROK_REFLECT_TIMEOUT env var."
         )
 
     memory_ids = [m["id"] for m in relevant]
@@ -541,7 +541,7 @@ async def kiroku_reflect(
 # ── Tool: Consolidate ─────────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_consolidate(bank_id: str) -> str:
+async def KIROK_consolidate(bank_id: str) -> str:
     """Manually trigger observation consolidation for a bank.
 
     Processes unconsolidated memories and synthesizes them into
@@ -559,14 +559,14 @@ async def kiroku_consolidate(bank_id: str) -> str:
     except asyncio.TimeoutError:
         return (
             f"Consolidation timed out after {CONSOLIDATION_TIMEOUT} seconds.\n"
-            f"Timeout can be configured via KIROKU_CONSOLIDATION_TIMEOUT env var."
+            f"Timeout can be configured via KIROK_CONSOLIDATION_TIMEOUT env var."
         )
 
 
 # ── Tool: Set Bank Config ────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_set_bank_config(
+async def KIROK_set_bank_config(
     bank_id: str,
     retain_mission: str = "",
     observations_mission: str = "",
@@ -597,7 +597,7 @@ async def kiroku_set_bank_config(
 # ── Tool: Get Bank Config ────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_get_bank_config(bank_id: str) -> str:
+async def KIROK_get_bank_config(bank_id: str) -> str:
     """Get the current configuration for a memory bank.
 
     Args:
@@ -615,12 +615,12 @@ async def kiroku_get_bank_config(bank_id: str) -> str:
 # ── Tool: List Banks ──────────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_list_banks() -> str:
+async def KIROK_list_banks() -> str:
     """List all available memory banks with their memory counts."""
     banks = _db.list_banks()
 
     if not banks:
-        return "No memory banks found. Use kiroku_retain to create your first memory."
+        return "No memory banks found. Use KIROK_retain to create your first memory."
 
     lines = ["Memory Banks:\n"]
     for b in banks:
@@ -635,7 +635,7 @@ async def kiroku_list_banks() -> str:
 # ── Tool: Stats ───────────────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_stats(bank_id: str) -> str:
+async def KIROK_stats(bank_id: str) -> str:
     """Get statistics for a specific memory bank.
 
     Args:
@@ -660,7 +660,7 @@ async def kiroku_stats(bank_id: str) -> str:
 # ── Tool: Forget ──────────────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_forget(memory_id: str) -> str:
+async def KIROK_forget(memory_id: str) -> str:
     """Delete a specific memory by its ID. This is destructive and cannot be undone.
 
     Args:
@@ -677,7 +677,7 @@ async def kiroku_forget(memory_id: str) -> str:
 # ── Tool: List Memories ───────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_list_memories(
+async def KIROK_list_memories(
     bank_id: str,
     limit: int = 20,
     offset: int = 0,
@@ -713,7 +713,7 @@ async def kiroku_list_memories(
 # ── Tool: Get Memory ──────────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_get_memory(memory_id: str) -> str:
+async def KIROK_get_memory(memory_id: str) -> str:
     """Get full details of a specific memory by its ID.
 
     Args:
@@ -743,7 +743,7 @@ async def kiroku_get_memory(memory_id: str) -> str:
 # ── Tool: Update Memory ───────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_update_memory(
+async def KIROK_update_memory(
     memory_id: str,
     content: str = "",
     context: str = "",
@@ -789,7 +789,7 @@ async def kiroku_update_memory(
 # ── Tool: Clear Bank ──────────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_clear_bank(bank_id: str) -> str:
+async def KIROK_clear_bank(bank_id: str) -> str:
     """Delete ALL memories in a bank, keeping the bank itself.
     Mental models are preserved. This is destructive and cannot be undone.
 
@@ -803,7 +803,7 @@ async def kiroku_clear_bank(bank_id: str) -> str:
 # ── Tool: Delete Bank ─────────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_delete_bank(bank_id: str) -> str:
+async def KIROK_delete_bank(bank_id: str) -> str:
     """Permanently delete a bank and ALL its memories and mental models.
     This is destructive and cannot be undone.
 
@@ -821,7 +821,7 @@ async def kiroku_delete_bank(bank_id: str) -> str:
 # ── Tool: List Mental Models ──────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_list_mental_models(
+async def KIROK_list_mental_models(
     bank_id: str,
     limit: int = 10,
 ) -> str:
@@ -834,7 +834,7 @@ async def kiroku_list_mental_models(
     models = _db.get_mental_models(bank_id, limit=limit)
 
     if not models:
-        return f"No mental models found in bank '{bank_id}'. Use kiroku_reflect to generate insights."
+        return f"No mental models found in bank '{bank_id}'. Use KIROK_reflect to generate insights."
 
     lines = [f"Mental Models in '{bank_id}' ({len(models)} found)\n"]
     for i, m in enumerate(models, 1):
@@ -848,7 +848,7 @@ async def kiroku_list_mental_models(
 # ── Tool: Get Mental Model ────────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_get_mental_model(model_id: str) -> str:
+async def KIROK_get_mental_model(model_id: str) -> str:
     """Get full details of a specific mental model.
 
     Args:
@@ -877,7 +877,7 @@ async def kiroku_get_mental_model(model_id: str) -> str:
 # ── Tool: Delete Mental Model ─────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_delete_mental_model(model_id: str) -> str:
+async def KIROK_delete_mental_model(model_id: str) -> str:
     """Delete a specific mental model. This is destructive and cannot be undone.
 
     Args:
@@ -893,7 +893,7 @@ async def kiroku_delete_mental_model(model_id: str) -> str:
 # ── Tool: Refresh Mental Model ────────────────────────────────────────
 
 @mcp.tool()
-async def kiroku_refresh_mental_model(
+async def KIROK_refresh_mental_model(
     model_id: str,
     limit: int = 20,
 ) -> str:
@@ -935,7 +935,7 @@ async def kiroku_refresh_mental_model(
             f"Refresh operation timed out after {REFLECT_TIMEOUT} seconds.\n"
             f"Consider reducing the number of memories (current limit: {limit}) "
             f"or simplifying the query.\n"
-            f"Timeout can be configured via KIROKU_REFLECT_TIMEOUT env var."
+            f"Timeout can be configured via KIROK_REFLECT_TIMEOUT env var."
         )
 
     memory_ids = [m["id"] for m in relevant]
@@ -956,7 +956,7 @@ async def kiroku_refresh_mental_model(
 # ── Entry Point ───────────────────────────────────────────────────────
 
 def main():
-    """Run the Kiroku MCP server."""
+    """Run the Kirok MCP server."""
     mcp.run()
 
 

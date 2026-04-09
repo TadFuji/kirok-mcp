@@ -1,12 +1,12 @@
 # Tools Reference
 
-Complete documentation for all 17 Kiroku MCP tools.
+Complete documentation for all 17 Kirok MCP tools.
 
 ---
 
 ## Core Operations
 
-### `kiroku_retain`
+### `KIROK_retain`
 
 Store new information in agent memory.
 
@@ -28,7 +28,7 @@ Store new information in agent memory.
 
 **Example:**
 ```
-kiroku_retain(
+KIROK_retain(
     bank_id="my-project",
     content="The deploy pipeline uses GitHub Actions with a staging environment on Vercel",
     context="architecture decision"
@@ -37,7 +37,7 @@ kiroku_retain(
 
 ---
 
-### `kiroku_recall`
+### `KIROK_recall`
 
 Search and retrieve relevant memories.
 
@@ -58,7 +58,7 @@ Search and retrieve relevant memories.
 
 **Example:**
 ```
-kiroku_recall(
+KIROK_recall(
     bank_id="my-project",
     query="deployment pipeline",
     limit=5
@@ -67,7 +67,7 @@ kiroku_recall(
 
 ---
 
-### `kiroku_reflect`
+### `KIROK_reflect`
 
 Generate insights from accumulated memories.
 
@@ -85,7 +85,7 @@ Generate insights from accumulated memories.
 
 **Example:**
 ```
-kiroku_reflect(
+KIROK_reflect(
     bank_id="my-project",
     query="What architectural patterns have emerged in this project?"
 )
@@ -93,7 +93,7 @@ kiroku_reflect(
 
 ---
 
-### `kiroku_smart_retain`
+### `KIROK_smart_retain`
 
 Evaluate importance before storing.
 
@@ -113,7 +113,7 @@ Evaluate importance before storing.
 
 ---
 
-### `kiroku_consolidate`
+### `KIROK_consolidate`
 
 Manually trigger observation consolidation.
 
@@ -131,7 +131,7 @@ Manually trigger observation consolidation.
 
 ## Memory Management
 
-### `kiroku_get_memory`
+### `KIROK_get_memory`
 
 Get full details of a specific memory.
 
@@ -139,7 +139,7 @@ Get full details of a specific memory.
 |------|------|----------|-------------|
 | `memory_id` | string | ✅ | The memory UUID |
 
-### `kiroku_update_memory`
+### `KIROK_update_memory`
 
 Update content and/or context. Re-extracts entities and regenerates embedding if content changes.
 
@@ -149,7 +149,7 @@ Update content and/or context. Re-extracts entities and regenerates embedding if
 | `content` | string | ❌ | `""` | New content (empty = keep current) |
 | `context` | string | ❌ | `""` | New context (empty = keep current) |
 
-### `kiroku_forget`
+### `KIROK_forget`
 
 Delete a specific memory. **Irreversible.**
 
@@ -157,7 +157,7 @@ Delete a specific memory. **Irreversible.**
 |------|------|----------|-------------|
 | `memory_id` | string | ✅ | Memory to delete |
 
-### `kiroku_list_memories`
+### `KIROK_list_memories`
 
 Browse memories with pagination.
 
@@ -171,20 +171,20 @@ Browse memories with pagination.
 
 ## Mental Models
 
-### `kiroku_list_mental_models`
+### `KIROK_list_mental_models`
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `bank_id` | string | ✅ | — | Bank to list models from |
 | `limit` | int | ❌ | `10` | Max models to return |
 
-### `kiroku_get_mental_model`
+### `KIROK_get_mental_model`
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `model_id` | string | ✅ | Mental model UUID |
 
-### `kiroku_delete_mental_model`
+### `KIROK_delete_mental_model`
 
 **Irreversible.**
 
@@ -192,7 +192,7 @@ Browse memories with pagination.
 |------|------|----------|-------------|
 | `model_id` | string | ✅ | Mental model to delete |
 
-### `kiroku_refresh_mental_model`
+### `KIROK_refresh_mental_model`
 
 Re-analyze with latest memories.
 
@@ -205,11 +205,11 @@ Re-analyze with latest memories.
 
 ## Bank Management
 
-### `kiroku_list_banks`
+### `KIROK_list_banks`
 
 List all memory banks with counts. No parameters.
 
-### `kiroku_stats`
+### `KIROK_stats`
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
@@ -217,7 +217,7 @@ List all memory banks with counts. No parameters.
 
 Returns: memory count, mental model count, observation count, unconsolidated count.
 
-### `kiroku_clear_bank`
+### `KIROK_clear_bank`
 
 Delete all memories. Mental models preserved. **Irreversible.**
 
@@ -225,7 +225,7 @@ Delete all memories. Mental models preserved. **Irreversible.**
 |------|------|----------|-------------|
 | `bank_id` | string | ✅ | Bank to clear |
 
-### `kiroku_delete_bank`
+### `KIROK_delete_bank`
 
 Delete bank + all memories + all mental models. **Irreversible.**
 
@@ -237,7 +237,7 @@ Delete bank + all memories + all mental models. **Irreversible.**
 
 ## Configuration
 
-### `kiroku_set_bank_config`
+### `KIROK_set_bank_config`
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
@@ -252,7 +252,7 @@ retain_mission: "Focus on architecture decisions, technology choices, and team p
 observations_mission: "Synthesize patterns about deployment frequency, preferred tools, and recurring pain points."
 ```
 
-### `kiroku_get_bank_config`
+### `KIROK_get_bank_config`
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|

@@ -1,14 +1,14 @@
-# Contributing to Kiroku
+# Contributing to Kirok
 
-Thank you for your interest in contributing to Kiroku! This document provides guidelines for contributing to the project.
+Thank you for your interest in contributing to Kirok! This document provides guidelines for contributing to the project.
 
 ## Getting Started
 
 1. **Fork** the repository
 2. **Clone** your fork:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/kiroku-mcp.git
-   cd kiroku-mcp
+   git clone https://github.com/YOUR_USERNAME/kirok-mcp.git
+   cd kirok-mcp
    ```
 3. **Install** dependencies with [uv](https://docs.astral.sh/uv/):
    ```bash
@@ -28,7 +28,7 @@ Thank you for your interest in contributing to Kiroku! This document provides gu
    ```bash
    git checkout -b feature/your-feature-name
    ```
-2. Make your changes in the `src/kiroku_mcp/` directory
+2. Make your changes in the `src/kirok_mcp/` directory
 3. Test your changes locally by running the MCP server
 4. Commit your changes with clear, descriptive messages
 
@@ -36,7 +36,7 @@ Thank you for your interest in contributing to Kiroku! This document provides gu
 
 - **Python 3.12+** — use modern Python features (type hints, `|` union, etc.)
 - **Docstrings** — all public functions must have docstrings
-- **Logging** — use `logging.getLogger("kiroku.module_name")` for all log output
+- **Logging** — use `logging.getLogger("kirok.module_name")` for all log output
 - **Error handling** — fail gracefully, never crash the MCP server
 
 ### Commit Messages
@@ -64,4 +64,4 @@ refactor: simplify deduplication logic
 
 ## License
 
-By contributing to Kiroku, you agree that your contributions will be licensed under the MIT License.
+By contributing to Kirok, you agree that your contributions will be licensed under the MIT License.
