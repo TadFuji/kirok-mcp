@@ -532,17 +532,6 @@ Alternatively, download Kirok as a ZIP from [GitHub](https://github.com/TadFuji/
 
 ---
 
-## 🔄 Migrating from Hindsight
-
-If you used this system when it was called "Hindsight", Kirok automatically migrates your data:
-
-1. On first run, Kirok checks for `~/.kirok/memory.db`
-2. If not found, checks for `~/.hindsight/memory.db`
-3. If found, **copies** the database to `~/.kirok/memory.db` (original is preserved)
-4. All existing memories, mental models, and observations are preserved
-
-No manual action required!
-
 ## 📂 Project Structure
 
 ```
