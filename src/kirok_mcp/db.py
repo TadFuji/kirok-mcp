@@ -7,7 +7,6 @@ for efficient retrieval.
 
 import json
 import logging
-import shutil
 import sqlite3
 import struct
 from datetime import datetime, timezone
@@ -70,13 +69,11 @@ def _sanitize_fts_query(query: str) -> str | None:
 
 
 def _resolve_db_path(db_path: str | Path | None) -> Path:
-    """Resolve the database path with automatic migration from legacy locations.
+    """Resolve the database path.
 
     Priority:
     1. Explicit db_path argument (if provided)
-    2. ~/.kirok/memory.db (new default)
-    3. If ~/.kirok/ doesn't exist but ~/.hindsight/memory.db does,
-       automatically copy it to ~/.kirok/ for seamless migration.
+    2. ~/.kirok/memory.db (default)
     """
     if db_path is not None:
         path = Path(db_path)
@@ -85,24 +82,6 @@ def _resolve_db_path(db_path: str | Path | None) -> Path:
 
     kirok_dir = Path.home() / ".kirok"
     kirok_db = kirok_dir / "memory.db"
-    legacy_dir = Path.home() / ".hindsight"
-    legacy_db = legacy_dir / "memory.db"
-
-    if kirok_db.exists():
-        return kirok_db
-
-    # Auto-migrate from legacy location
-    if legacy_db.exists():
-        kirok_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(
-            "Migrating database from %s to %s",
-            legacy_db, kirok_db,
-        )
-        shutil.copy2(str(legacy_db), str(kirok_db))
-        logger.info("Migration complete. Original database preserved at %s", legacy_db)
-        return kirok_db
-
-    # Fresh install — create new
     kirok_dir.mkdir(parents=True, exist_ok=True)
     return kirok_db
 
