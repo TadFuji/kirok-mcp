@@ -1,220 +1,86 @@
 ---
 name: kirok
-description: Persistent agent memory via the Kirok MCP server (Retain/Recall/Reflect). Use this skill whenever storing learnings, recalling context before tasks, reflecting on accumulated knowledge, managing memory banks, or working with mental models. Trigger when memory, remembering, learning, preferences, or past experiences are relevant.
+description: The ultimate, autonomous memory skill for the Kirok MCP server. Teaches the AI to proactively manage long-term memory (Retain, Recall, Reflect) without explicit user prompting. Establishes strict bank taxonomy and operational rules.
 ---
 
-# Kirok Memory System
+# Kirok: Fully Autonomous Memory Protocol
 
-Persistent memory via the Kirok MCP server (19 tools). **Proactively store learnings and recall context** to provide better assistance across sessions.
+**You are equipped with Kirok (記録), the next-generation memory system.**
+Kirok provides persistent, cross-session memory via its MCP tools. Your goal is to function as an autonomous "Second Brain." You must proactively manage your memory without needing the user to say "remember this."
 
-> **Note**: Kirok (記録) is the rebranded successor to Hindsight. All tool names now use the `KIROK_` prefix. The underlying database and architecture remain the same.
+> **Note**: Tools are prefixed with `kirok_` (e.g., `kirok_retain`, `kirok_recall`).
 
-## How It Works
+---
 
-When `KIROK_retain` is called, the server runs an internal pipeline:
+## 🛑 Core Operational Directives
 
-1. **Loads bank config** — applies the Retain Mission (if set) to guide extraction
-2. **Extracts entities** (people, tools, concepts) and keywords using Gemini LLM
-3. **Generates embeddings** via `gemini-embedding-001` for semantic search
-4. **Indexes for FTS5** full-text search (BM25)
-5. **Auto-consolidates** — compares new memories against existing Observations, creating/updating patterns
+You must integrate memory operations seamlessly into your standard workflow:
 
-Pass **rich, full-context content** — the server extracts what matters better than a pre-summarized string. Decide **when** to store, not **what** to extract.
+1. **Pre-flight Recall (The "Look Before You Leap" Rule)**
+   Before starting any non-trivial task (debugging, writing a new script, planning an architecture), you MUST perform a `kirok_recall` to check for past decisions, user preferences, or known bugs.
+2. **Post-Task Retain (The "Record the Lesson" Rule)**
+   When a bug is fixed, a preference is stated, or a milestone is reached, you MUST instinctively execute `kirok_retain`. Do not ask the user for permission to remember important project facts.
+3. **Periodic Reflection (The "Wisdom" Rule)**
+   If a series of complex tasks has been completed, consider using `kirok_reflect` to synthesize underlying patterns into mental models.
 
-## Autonomous Learning (v1.0.0)
+---
 
-Kirok has **three autonomous features** inspired by the upstream vectorize-io/hindsight:
+## 🏦 Bank Taxonomy & Fragmentation Prevention
 
-### 1. Retain Mission (記憶フィルタリング)
-Set a plain-language mission per bank to guide what to extract and what to ignore:
-```
-KIROK_set_bank_config(
-    bank_id="antigravity",
-    retain_mission="Focus on technical decisions, architecture choices, and error solutions. Ignore greetings, acknowledgments, and temporary states.",
-    observations_mission="Synthesize durable patterns about system architecture, user preferences, and recurring technical issues."
+To prevent memory fragmentation (which destroys recall accuracy), you are **STRICTLY FORBIDDEN** from creating arbitrary banks. Always use one of the following standard banks:
+
+| Bank ID | Purpose | Example Triggers |
+| :--- | :--- | :--- |
+| `user-prefs` | User personal preferences and rules | Coding style, language policy (e.g., Japanese for UI), workflow habits |
+| `architecture` | System design and technical specs | Tool versions, specific frameworks in use, core logic choices |
+| `troubleshooting` | Error logs, root causes, and fixes | "We found why X fails, we must use workaround Y." |
+| `milestones` | Project achievements and work history | "Successfully migrated to Next.js on 2026-04-10" |
+| `scratch` | Temporary or volatile memory | Unfinished ideas, pending tasks that don't need permanent record |
+
+*If you absolutely must create a new bank, its purpose must be broad enough to capture at least 20 future memories. Do not create project-specific banks for tiny side-projects.*
+
+---
+
+## 🧠 Smart Retention Best Practices
+
+When calling `kirok_retain`, you must optimize for Kirok's internal **Entity Extraction (Gemini) Engine**:
+
+- **DO NOT Pre-Summarize!** Provide rich, full-context paragraphs. The Kirok server has a powerful internal LLM that works best with raw, detailed text, not compressed bullet points.
+- **Categorize via Context Parameter**: Always set the `context` parameter to one of: `preference`, `knowledge`, `architecture decision`, `troubleshooting`, or `behavior`.
+- **The Troubleshooting Formula**: When storing fixed errors, use this exact structure in the content:
+  *(1) Symptom  →  (2) Root Cause  →  (3) Fix  →  (4) Prevention*
+
+**Example of an excellent Retain:**
+```python
+kirok_retain(
+    bank_id="troubleshooting",
+    content="Symptom: The login API was throwing a 500. Root Cause: The JWT token was not being properly cast to a string before hashing. Fix: Added str() wrapper around token payload. Prevention: Enforce type-checking in the middle-ware.",
+    context="troubleshooting"
 )
 ```
 
-### 2. Observation Consolidation (自動知識統合)
-After each `retain()`, the server automatically:
-- Compares new memories against existing Observations
-- Detects patterns and creates new Observations
-- Updates existing Observations when new evidence reinforces or contradicts them
-- Preserves history when contradictions arise (nuanced understanding)
-- Recalls include relevant Observations alongside raw memories
+---
 
-### 3. Smart Retain (重要度フィルタリング)
-Use `KIROK_smart_retain` for bulk/automatic ingestion:
-```
-KIROK_smart_retain(
-    bank_id="work-history",
-    content="Long conversation content...",
-    threshold=6  # Only retain if importance score >= 6/10
-)
-```
+## 🔍 Smart Recall Best Practices
 
-## Bank Design
+- **Use Semantic Natural Language**: Kirok uses Hybrid Search (Vector + FTS5 + Reciprocal Rank Fusion). Provide natural language queries to `kirok_recall` (e.g., "How did we fix the JWT token issue last week?").
+- **Time Filters**: For high-volume banks, always use `time_min` and `time_max` (ISO 8601 format) to constrain the search space.
 
-| Bank | Purpose | Examples |
-|------|---------|---------|
-| `antigravity` | System knowledge, configuration, architecture | Tool updates, skill changes, constitution changes |
-| `user-prefs` | 藤川さんの preferences and conventions | Coding style, communication style, workflow preferences |
-| `openclaw` | OpenClaw-specific knowledge | Config changes, troubleshooting history, version notes |
-| `work-history` | Cross-project work log | Milestones, deliverables, significant decisions |
-| `docs-cache` | docs-intelligence skill managed cache | API docs cache (auto-managed, do not retain manually) |
+---
 
-### Bank Creation Gate
-**Do NOT create new banks** without meeting ALL of these criteria:
-1. **5+ memories** would immediately go into the new bank
-2. **Explicit user approval** obtained before creation
-3. **No existing bank** covers the domain (check the table above first)
+## 🔄 Auto-Consolidation (Smart Dedup)
 
-Fragmentation is the #1 enemy of recall quality. When in doubt, use an existing bank with a descriptive `context` parameter.
+Kirok features autonomous Observation Consolidation.
+When you call `kirok_retain`, the server's AI will automatically compare the new memory to existing observations. It will silently merge overlapping concepts, resolve contradictions, and generate durable "Insights".
+**You don't need to manually dedup.** Just feed the facts to `kirok_retain` and let the server handle the curation.
 
-## When to Retain
+---
 
-**Always store after learning something valuable:**
+## 📋 The "Memory Hygiene" Checklist
 
-- **User Preferences**: Coding style, tool preferences, communication preferences, project conventions
-- **Procedure Outcomes**: Steps that worked (or failed) and why, workarounds, configurations that resolved issues
-- **Learnings**: Bugs and solutions, performance optimizations, architecture decisions and rationale, dependency/version requirements
-- **System Changes**: Constitution updates, skill additions/modifications, tool configuration changes
+Before finalizing your response to the user, mentally review this checklist:
+- [ ] Did the user state a preference I should store? (`user-prefs`)
+- [ ] Did we solve a tricky bug that might recur? (`troubleshooting`)
+- [ ] Are we embarking on a complex task without checking past history? (`kirok_recall`)
 
-### Retain Examples
-
-```
-# Rich context — let the server extract the facts
-KIROK_retain(bank_id="user-prefs",
-  content="藤川さんはコードコメントとcommit messageは英語、ユーザーへの説明は日本語を好む。技術引用（ログ、スタックトレース等）は原文のまま保持する。Desu/Masu形式のpolite Japaneseが標準。",
-  context="language policy")
-
-# Include outcomes, not just actions
-KIROK_retain(bank_id="openclaw",
-  content="OpenClaw watchdog のWindows Scheduled Task登録で、VBSラッパー経由のサイレント実行パターンを採用。直接PowerShellだとコンソールウィンドウが表示されてしまう問題を回避。register-tasks.ps1 → check-openclaw-updates.vbs → check-openclaw-updates.ps1 の3段構成。",
-  context="architecture decision")
-```
-
-### Structured Retain Guidelines (inspired by DeerFlow Memory System)
-
-**Context parameter categorization** — Use the `context` parameter consistently to classify memories:
-
-| Context Category | When to Use | Examples |
-|-----------------|-------------|----------|
-| `preference` | User likes/dislikes, style choices | "Japanese output, English code comments" |
-| `knowledge` | Expertise, mastered techniques | "WSL PATH fix via BASH_ENV" |
-| `architecture decision` | Design choices and rationale | "VBS wrapper for silent PowerShell execution" |
-| `behavior` | Working patterns, habits | "Prefers small focused PRs over large ones" |
-| `goal` | Stated objectives, targets | "Migrate chigasaki.tv to Cloudflare Pages" |
-| `system update` | Tool/config/version changes | "Kirok v1.0.0 migration from Hindsight" |
-| `troubleshooting` | Problem → root cause → fix | "OpenClaw JSON parse error from malformed CLI output" |
-
-**Deduplication awareness** — Before retaining, briefly recall the same bank+topic to avoid storing duplicate facts. One updated memory is better than three overlapping ones.
-
-**What NOT to retain** (session-scoped information that pollutes long-term memory):
-- Temporary file paths or URLs that will expire
-- Intermediate debugging outputs after the root cause is found (retain only the root cause + fix)
-- Speculative plans that were not approved or executed
-- Raw tool outputs — retain the insight, not the data
-
-### Kirok と KI の役割分担
-
-→ **`post-task-recording` スキル参照**。詳細な判定フロー・品質チェックリストはそちらに集約。
-基本原則: Kirok =「なぜ？」（教訓）、KI =「どうやる？」（手順）。重複しない。
-
-## When to Recall
-
-**Always recall before:**
-
-- Starting any non-trivial task
-- Making implementation decisions
-- Suggesting tools, libraries, or approaches
-- Working in a new area of the project
-- Answering questions about past work or preferences
-
-### Recall Examples
-
-```
-# Before starting work
-KIROK_recall(bank_id="user-prefs", query="coding preferences and conventions")
-
-# Time-filtered search
-KIROK_recall(bank_id="antigravity", query="system changes", time_min="2026-03-15")
-
-# Before debugging
-KIROK_recall(bank_id="openclaw", query="similar errors or troubleshooting")
-```
-
-## When to Reflect
-
-Use `KIROK_reflect` for **synthesis and pattern recognition**, not simple retrieval:
-
-- Consolidating learnings after a series of related tasks
-- Answering "what have we learned about X?" questions
-- Building strategic understanding from accumulated experiences
-- Periodic review (e.g., "What patterns have emerged in our workflow?")
-
-Reflect creates a **Mental Model** that persists for future reference. Use `KIROK_refresh_mental_model` to update existing models with new evidence.
-
-## Tool Reference
-
-### Core Memory
-| Tool | Use |
-|------|-----|
-| `KIROK_retain` | Store information (auto-extracts entities/keywords/embeddings, auto-consolidates) |
-| `KIROK_smart_retain` | Evaluate importance → only retain if score ≥ threshold (for bulk ingestion) |
-| `KIROK_recall` | Search memories + observations (semantic + BM25 + RRF fusion, time filters) |
-| `KIROK_reflect` | Analyze memories → generate Mental Model insight |
-| `KIROK_consolidate` | Manually trigger observation consolidation for a bank |
-
-### Bank Configuration
-| Tool | Use |
-|------|-----|
-| `KIROK_set_bank_config` | Set retain_mission and observations_mission for a bank |
-| `KIROK_get_bank_config` | View current bank configuration |
-
-### Memory Browsing
-| Tool | Use |
-|------|-----|
-| `KIROK_list_memories` | Browse bank contents (paginated, newest first) |
-| `KIROK_get_memory` | Full details of a specific memory |
-| `KIROK_update_memory` | Edit content (re-extracts entities, regenerates embedding) |
-| `KIROK_forget` | Delete a single memory |
-
-### Bank Management
-| Tool | Use |
-|------|-----|
-| `KIROK_list_banks` | List all banks with counts |
-| `KIROK_stats` | Memory/model/observation counts and config status |
-| `KIROK_clear_bank` | Delete all memories in a bank (keeps mental models) |
-| `KIROK_delete_bank` | Permanently delete a bank and all its data |
-
-### Mental Models
-| Tool | Use |
-|------|-----|
-| `KIROK_list_mental_models` | List insights generated by Reflect |
-| `KIROK_get_mental_model` | Full details of a mental model |
-| `KIROK_delete_mental_model` | Delete a mental model |
-| `KIROK_refresh_mental_model` | Re-analyze with latest memories |
-
-## Memory Hygiene
-
-- **Retain immediately** — don't defer, context is richest right after learning
-- **Recall before acting** — check for existing knowledge before starting work
-- **Reflect periodically** — consolidate learnings into mental models
-- **Set bank missions** — configure retain and observations missions for your most-used banks
-- **Record every error resolution** — when a problem is solved, retain: (1) what happened, (2) root cause, (3) how it was fixed, (4) prevention measures. Use `context: troubleshooting`. "Fixed" is not done; "Fixed AND recorded" is done
-- **Review and prune** — use `KIROK_list_memories` to spot duplicates or outdated entries; `KIROK_update_memory` to correct, `KIROK_forget` to remove
-- **Don't over-retain** — store decisions and outcomes, not routine steps. One rich memory beats ten shallow ones
-
-## Gotchas
-
-- ❌ Don't pre-summarize content before retaining. The server's entity extraction pipeline works better on raw, rich text than on condensed bullet points
-- ✅ ~~Don't use FTS5 special syntax in recall queries~~ → **Fixed in v0.3.0**: `_sanitize_fts_query()` automatically escapes FTS5 operators (AND, OR, NOT, NEAR) and wraps tokens in double quotes. FTS5 parse errors are caught and fall back to empty (semantic search still works via RRF)
-- ✅ ~~Don't include dates with hyphens in recall queries~~ → **Fixed in v0.3.0**: Hyphens are replaced with spaces before FTS5 processing. Date filtering should still use `time_min`/`time_max` parameters for best results
-- ⚠️ Recall loads ALL embeddings for brute-force cosine similarity. With thousands of memories, consider using `time_min`/`time_max` to narrow scope
-- ⚠️ `KIROK_clear_bank` and `KIROK_delete_bank` are destructive with no undo. Always confirm with the user before executing (SMART AUTONOMY: Destructive Change)
-- ⚠️ When updating a memory, if content changes, a Gemini API call is made for entity extraction + embedding. Context-only updates are cheaper (no API call)
-- ⚠️ `KIROK_reflect` and `KIROK_refresh_mental_model` have a wall-clock timeout (default 300s, configurable via `KIROK_REFLECT_TIMEOUT` env var). If timeout occurs, consider reducing `limit` or simplifying the query
-- ⚠️ Empty/whitespace-only queries to `KIROK_recall` are rejected early with an error message. Always provide meaningful search terms
-- ⚠️ Auto-consolidation runs within `KIROK_retain` and has its own timeout (default 120s via `KIROK_CONSOLIDATION_TIMEOUT`). If it times out, memories are still saved — consolidation will run on the next retain
-- ⚠️ `KIROK_smart_retain` makes an extra LLM call for importance evaluation. Use regular `KIROK_retain` when you're confident the content is worth keeping
+**Action:** Execute these tools autonomously as needed, perfectly managing the user's second brain.
