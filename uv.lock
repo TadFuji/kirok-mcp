@@ -386,7 +386,7 @@ wheels = [
 ]
 
 [[package]]
-name = "kiroku-mcp"
+name = "kirok-mcp"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [

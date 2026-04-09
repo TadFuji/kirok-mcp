@@ -31,6 +31,20 @@ Kirok (記録, "record" in Japanese) is a **Model Context Protocol (MCP) server*
 
 ---
 
+## 🎁 Bonus: Agent Skills Starter Pack Included
+
+To help you get the most out of Kirok immediately, we've included a curated starter pack of 5 highly effective **"Agent Skills"** (fully localized for Japanese users) inside the `skills/` directory!
+
+- `kirok`: Teaches the AI how to use Kirok's memory mechanics effectively.
+- `friendly-guide`: Translates all technical AI output into simple, non-engineer friendly Japanese.
+- `doc-coauthoring`: An assisted workflow for writing high-quality documents with AI.
+- `skill-creator`: Teaches the AI how to write and format new Agent Skills.
+- `ceremonial-rescue-jp`: A great non-technical demonstration skill for Japanese etiquette.
+
+**How to use**: Simply place the downloaded `skills` folder into your working directory, and your AI will automatically inherit these professional workflows.
+
+---
+
 ## 🚀 Getting Started (Step by Step)
 
 Follow these steps in order. Estimated time: **10–15 minutes**.
