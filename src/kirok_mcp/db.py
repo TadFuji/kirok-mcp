@@ -618,11 +618,17 @@ class MemoryDB:
 
     # ── Bank Management ───────────────────────────────────────────────
 
-    def clear_bank(self, bank_id: str) -> dict[str, int]:
-        """Delete all memories and observations in a bank.
+    def _delete_bank_data(
+        self,
+        bank_id: str,
+        include_models: bool = False,
+        include_config: bool = False,
+    ) -> dict[str, int]:
+        """Internal helper: delete bank data in a single transaction.
 
-        Mental models and bank configuration are preserved.
-        Returns counts for deleted rows.
+        Always deletes memories, fts_memories, observations, fts_observations.
+        Optionally deletes mental_models and bank_config.
+        Returns counts for all affected groups.
         """
         assert self.conn is not None
 
@@ -632,49 +638,26 @@ class MemoryDB:
         obs_count = self.conn.execute(
             "SELECT COUNT(*) FROM observations WHERE bank_id = ?", (bank_id,)
         ).fetchone()[0]
+        model_count = 0
+        config_count = 0
 
-        if mem_count > 0 or obs_count > 0:
-            try:
-                self.conn.execute(
-                    "DELETE FROM fts_memories WHERE id IN "
-                    "(SELECT id FROM memories WHERE bank_id = ?)",
-                    (bank_id,),
-                )
-                self.conn.execute(
-                    "DELETE FROM fts_observations WHERE id IN "
-                    "(SELECT id FROM observations WHERE bank_id = ?)",
-                    (bank_id,),
-                )
-                self.conn.execute("DELETE FROM memories WHERE bank_id = ?", (bank_id,))
-                self.conn.execute(
-                    "DELETE FROM observations WHERE bank_id = ?", (bank_id,)
-                )
-                self.conn.commit()
-            except Exception:
-                self.conn.rollback()
-                raise
+        if include_models:
+            model_count = self.conn.execute(
+                "SELECT COUNT(*) FROM mental_models WHERE bank_id = ?", (bank_id,)
+            ).fetchone()[0]
+        if include_config:
+            config_count = self.conn.execute(
+                "SELECT COUNT(*) FROM bank_config WHERE bank_id = ?", (bank_id,)
+            ).fetchone()[0]
 
-        return {
-            "memories_deleted": mem_count,
-            "observations_deleted": obs_count,
-        }
-
-    def delete_bank(self, bank_id: str) -> dict[str, int]:
-        """Delete a bank and all associated memories, observations, models, and config."""
-        assert self.conn is not None
-
-        mem_count = self.conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE bank_id = ?", (bank_id,)
-        ).fetchone()[0]
-        obs_count = self.conn.execute(
-            "SELECT COUNT(*) FROM observations WHERE bank_id = ?", (bank_id,)
-        ).fetchone()[0]
-        model_count = self.conn.execute(
-            "SELECT COUNT(*) FROM mental_models WHERE bank_id = ?", (bank_id,)
-        ).fetchone()[0]
-        config_count = self.conn.execute(
-            "SELECT COUNT(*) FROM bank_config WHERE bank_id = ?", (bank_id,)
-        ).fetchone()[0]
+        has_data = mem_count > 0 or obs_count > 0 or model_count > 0 or config_count > 0
+        if not has_data:
+            return {
+                "memories_deleted": 0,
+                "observations_deleted": 0,
+                "models_deleted": model_count,
+                "config_deleted": config_count,
+            }
 
         try:
             self.conn.execute(
@@ -688,11 +671,17 @@ class MemoryDB:
                 (bank_id,),
             )
             self.conn.execute("DELETE FROM memories WHERE bank_id = ?", (bank_id,))
-            self.conn.execute("DELETE FROM observations WHERE bank_id = ?", (bank_id,))
             self.conn.execute(
-                "DELETE FROM mental_models WHERE bank_id = ?", (bank_id,)
+                "DELETE FROM observations WHERE bank_id = ?", (bank_id,)
             )
-            self.conn.execute("DELETE FROM bank_config WHERE bank_id = ?", (bank_id,))
+            if include_models:
+                self.conn.execute(
+                    "DELETE FROM mental_models WHERE bank_id = ?", (bank_id,)
+                )
+            if include_config:
+                self.conn.execute(
+                    "DELETE FROM bank_config WHERE bank_id = ?", (bank_id,)
+                )
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -704,6 +693,24 @@ class MemoryDB:
             "models_deleted": model_count,
             "config_deleted": config_count,
         }
+
+    def clear_bank(self, bank_id: str) -> dict[str, int]:
+        """Delete all memories and observations in a bank.
+
+        Mental models and bank configuration are preserved.
+        Returns counts for deleted rows.
+        """
+        result = self._delete_bank_data(bank_id)
+        return {
+            "memories_deleted": result["memories_deleted"],
+            "observations_deleted": result["observations_deleted"],
+        }
+
+    def delete_bank(self, bank_id: str) -> dict[str, int]:
+        """Delete a bank and all associated memories, observations, models, and config."""
+        return self._delete_bank_data(
+            bank_id, include_models=True, include_config=True
+        )
 
     # ── Mental Model Management ───────────────────────────────────────
 
