@@ -618,41 +618,92 @@ class MemoryDB:
 
     # ── Bank Management ───────────────────────────────────────────────
 
-    def clear_bank(self, bank_id: str) -> int:
-        """Delete all memories in a bank. Returns number of deleted memories."""
+    def clear_bank(self, bank_id: str) -> dict[str, int]:
+        """Delete all memories and observations in a bank.
+
+        Mental models and bank configuration are preserved.
+        Returns counts for deleted rows.
+        """
         assert self.conn is not None
 
-        ids = self.conn.execute(
-            "SELECT id FROM memories WHERE bank_id = ?", (bank_id,)
-        ).fetchall()
-        count = len(ids)
+        mem_count = self.conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE bank_id = ?", (bank_id,)
+        ).fetchone()[0]
+        obs_count = self.conn.execute(
+            "SELECT COUNT(*) FROM observations WHERE bank_id = ?", (bank_id,)
+        ).fetchone()[0]
 
-        if count > 0:
+        if mem_count > 0 or obs_count > 0:
+            try:
+                self.conn.execute(
+                    "DELETE FROM fts_memories WHERE id IN "
+                    "(SELECT id FROM memories WHERE bank_id = ?)",
+                    (bank_id,),
+                )
+                self.conn.execute(
+                    "DELETE FROM fts_observations WHERE id IN "
+                    "(SELECT id FROM observations WHERE bank_id = ?)",
+                    (bank_id,),
+                )
+                self.conn.execute("DELETE FROM memories WHERE bank_id = ?", (bank_id,))
+                self.conn.execute(
+                    "DELETE FROM observations WHERE bank_id = ?", (bank_id,)
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+        return {
+            "memories_deleted": mem_count,
+            "observations_deleted": obs_count,
+        }
+
+    def delete_bank(self, bank_id: str) -> dict[str, int]:
+        """Delete a bank and all associated memories, observations, models, and config."""
+        assert self.conn is not None
+
+        mem_count = self.conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE bank_id = ?", (bank_id,)
+        ).fetchone()[0]
+        obs_count = self.conn.execute(
+            "SELECT COUNT(*) FROM observations WHERE bank_id = ?", (bank_id,)
+        ).fetchone()[0]
+        model_count = self.conn.execute(
+            "SELECT COUNT(*) FROM mental_models WHERE bank_id = ?", (bank_id,)
+        ).fetchone()[0]
+        config_count = self.conn.execute(
+            "SELECT COUNT(*) FROM bank_config WHERE bank_id = ?", (bank_id,)
+        ).fetchone()[0]
+
+        try:
             self.conn.execute(
                 "DELETE FROM fts_memories WHERE id IN "
                 "(SELECT id FROM memories WHERE bank_id = ?)",
                 (bank_id,),
             )
+            self.conn.execute(
+                "DELETE FROM fts_observations WHERE id IN "
+                "(SELECT id FROM observations WHERE bank_id = ?)",
+                (bank_id,),
+            )
             self.conn.execute("DELETE FROM memories WHERE bank_id = ?", (bank_id,))
+            self.conn.execute("DELETE FROM observations WHERE bank_id = ?", (bank_id,))
+            self.conn.execute(
+                "DELETE FROM mental_models WHERE bank_id = ?", (bank_id,)
+            )
+            self.conn.execute("DELETE FROM bank_config WHERE bank_id = ?", (bank_id,))
             self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
-        return count
-
-    def delete_bank(self, bank_id: str) -> dict[str, int]:
-        """Delete a bank: all memories, FTS entries, and mental models."""
-        assert self.conn is not None
-
-        mem_count = self.clear_bank(bank_id)
-
-        model_count = self.conn.execute(
-            "SELECT COUNT(*) FROM mental_models WHERE bank_id = ?", (bank_id,)
-        ).fetchone()[0]
-        self.conn.execute(
-            "DELETE FROM mental_models WHERE bank_id = ?", (bank_id,)
-        )
-        self.conn.commit()
-
-        return {"memories_deleted": mem_count, "models_deleted": model_count}
+        return {
+            "memories_deleted": mem_count,
+            "observations_deleted": obs_count,
+            "models_deleted": model_count,
+            "config_deleted": config_count,
+        }
 
     # ── Mental Model Management ───────────────────────────────────────
 

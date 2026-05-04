@@ -790,21 +790,26 @@ async def KIROK_update_memory(
 
 @mcp.tool()
 async def KIROK_clear_bank(bank_id: str) -> str:
-    """Delete ALL memories in a bank, keeping the bank itself.
+    """Delete ALL memories and observations in a bank, keeping the bank itself.
     Mental models are preserved. This is destructive and cannot be undone.
 
     Args:
         bank_id: Bank to clear.
     """
-    count = _db.clear_bank(bank_id)
-    return f"Cleared {count} memories from bank '{bank_id}'."
+    result = _db.clear_bank(bank_id)
+    return (
+        f"Cleared bank '{bank_id}'.\n"
+        f"- Memories removed: {result['memories_deleted']}\n"
+        f"- Observations removed: {result['observations_deleted']}\n"
+        f"- Mental models preserved\n"
+    )
 
 
 # ── Tool: Delete Bank ─────────────────────────────────────────────────
 
 @mcp.tool()
 async def KIROK_delete_bank(bank_id: str) -> str:
-    """Permanently delete a bank and ALL its memories and mental models.
+    """Permanently delete a bank and ALL its memories, observations, models, and config.
     This is destructive and cannot be undone.
 
     Args:
@@ -814,7 +819,9 @@ async def KIROK_delete_bank(bank_id: str) -> str:
     return (
         f"Bank '{bank_id}' deleted.\n"
         f"- Memories removed: {result['memories_deleted']}\n"
+        f"- Observations removed: {result['observations_deleted']}\n"
         f"- Mental models removed: {result['models_deleted']}\n"
+        f"- Bank config removed: {result['config_deleted']}\n"
     )
 
 

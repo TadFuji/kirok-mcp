@@ -39,6 +39,14 @@ Thank you for your interest in contributing to Kirok! This document provides gui
 - **Logging** — use `logging.getLogger("kirok.module_name")` for all log output
 - **Error handling** — fail gracefully, never crash the MCP server
 
+### Running Tests
+
+Run the unit test suite with:
+
+```bash
+uv run python -m unittest discover -s tests
+```
+
 ### Commit Messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):

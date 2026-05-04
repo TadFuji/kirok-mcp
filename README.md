@@ -425,7 +425,7 @@ Kirok provides **19 MCP tools** organized into five categories:
 |------|-------------|
 | `KIROK_list_banks` | List all memory banks with counts |
 | `KIROK_stats` | Get detailed statistics for a bank |
-| `KIROK_clear_bank` | Delete all memories in a bank |
+| `KIROK_clear_bank` | Delete all memories and observations in a bank |
 | `KIROK_delete_bank` | Permanently delete a bank and all its data |
 
 ### Configuration

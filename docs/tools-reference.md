@@ -219,7 +219,7 @@ Returns: memory count, mental model count, observation count, unconsolidated cou
 
 ### `KIROK_clear_bank`
 
-Delete all memories. Mental models preserved. **Irreversible.**
+Delete all memories and observations. Mental models and bank configuration are preserved. **Irreversible.**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
@@ -227,7 +227,7 @@ Delete all memories. Mental models preserved. **Irreversible.**
 
 ### `KIROK_delete_bank`
 
-Delete bank + all memories + all mental models. **Irreversible.**
+Delete bank + all memories + observations + mental models + bank configuration. **Irreversible.**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
