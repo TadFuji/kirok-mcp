@@ -108,7 +108,9 @@ Evaluate importance before storing.
 
 **Behavior:**
 - LLM scores content 1-10
-- Only stores if score >= threshold
+- Only proceeds if score >= threshold
+- Passing content uses the same retain pipeline as `KIROK_retain`
+- Deduplication, memory updates, NOOP decisions, and auto-consolidation apply
 - Ideal for bulk/automatic ingestion
 
 ---

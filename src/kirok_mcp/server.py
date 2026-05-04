@@ -177,30 +177,13 @@ async def _run_consolidation(bank_id: str) -> str:
     )
 
 
-# ── Tool: Retain ──────────────────────────────────────────────────────
-
-@mcp.tool()
-async def KIROK_retain(
+async def _retain_memory(
     bank_id: str,
     content: str,
     context: str = "",
     timestamp: str = "",
 ) -> str:
-    """Store new information in agent memory.
-
-    Automatically extracts entities and keywords, generates a semantic
-    embedding, and indexes for later retrieval.
-
-    Smart Deduplication (inspired by Mem0): If the new content is highly
-    similar to existing memories (cosine > 0.85), the system will decide
-    whether to ADD (new info), UPDATE (enrich existing), or NOOP (skip).
-
-    Args:
-        bank_id: Memory bank identifier (e.g. 'antigravity', 'user-prefs').
-        content: The information to remember.
-        context: Optional context about the source (e.g. 'project meeting').
-        timestamp: Optional ISO 8601 timestamp. Defaults to now.
-    """
+    """Shared retain pipeline used by normal and smart retain."""
     # Get bank config for retain mission
     config = _db.get_bank_config(bank_id)
     mission = config.get("retain_mission", "")
@@ -314,6 +297,38 @@ async def KIROK_retain(
     return result
 
 
+# ── Tool: Retain ──────────────────────────────────────────────────────
+
+@mcp.tool()
+async def KIROK_retain(
+    bank_id: str,
+    content: str,
+    context: str = "",
+    timestamp: str = "",
+) -> str:
+    """Store new information in agent memory.
+
+    Automatically extracts entities and keywords, generates a semantic
+    embedding, and indexes for later retrieval.
+
+    Smart Deduplication (inspired by Mem0): If the new content is highly
+    similar to existing memories (cosine > 0.85), the system will decide
+    whether to ADD (new info), UPDATE (enrich existing), or NOOP (skip).
+
+    Args:
+        bank_id: Memory bank identifier (e.g. 'antigravity', 'user-prefs').
+        content: The information to remember.
+        context: Optional context about the source (e.g. 'project meeting').
+        timestamp: Optional ISO 8601 timestamp. Defaults to now.
+    """
+    return await _retain_memory(
+        bank_id=bank_id,
+        content=content,
+        context=context,
+        timestamp=timestamp,
+    )
+
+
 # ── Tool: Smart Retain ────────────────────────────────────────────────
 
 @mcp.tool()
@@ -349,31 +364,20 @@ async def KIROK_smart_retain(
             f"- Reason: {evaluation['reason']}\n"
         )
 
-    # Content is important enough — proceed with full retain
-    extraction = await _llm.extract_entities(content, mission=mission)
-    embedding = await _embedder.embed(content)
-
-    memory_id = _db.insert_memory(
+    # Content is important enough — proceed through the same retain pipeline
+    # so deduplication, updates, and auto-consolidation stay consistent.
+    retain_result = await _retain_memory(
         bank_id=bank_id,
         content=content,
-        embedding=embedding,
-        entities=extraction["entities"],
-        keywords=extraction["keywords"],
         context=context,
-        timestamp=timestamp or None,
+        timestamp=timestamp,
     )
 
-    entities_str = ", ".join(extraction["entities"]) if extraction["entities"] else "(none)"
-    keywords_str = ", ".join(extraction["keywords"]) if extraction["keywords"] else "(none)"
-
     return (
-        f"Memory retained (passed importance filter).\n\n"
+        f"Content passed importance filter.\n\n"
         f"- Score: {evaluation['score']}/10 (threshold: {threshold})\n"
-        f"- Reason: {evaluation['reason']}\n"
-        f"- ID: {memory_id}\n"
-        f"- Bank: {bank_id}\n"
-        f"- Entities: {entities_str}\n"
-        f"- Keywords: {keywords_str}\n"
+        f"- Reason: {evaluation['reason']}\n\n"
+        f"{retain_result}"
     )
 
 
