@@ -41,6 +41,7 @@ Issues = "https://github.com/TadFuji/kirok-mcp/issues"
 
 [project.scripts]
 kirok-mcp = "kirok_mcp.server:main"
+kirok-doctor = "kirok_mcp.diagnostics:main"
 
 [build-system]
 requires = ["hatchling"]

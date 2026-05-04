@@ -447,6 +447,30 @@ All configuration is via environment variables in the `.env` file:
 | `KIROK_REFLECT_TIMEOUT` | ❌ | `300` | Timeout in seconds for reflect operations |
 | `KIROK_CONSOLIDATION_TIMEOUT` | ❌ | `120` | Timeout in seconds for consolidation |
 
+## 🩺 Diagnostics
+
+Run the offline setup checker:
+
+```bash
+uv run kirok-doctor
+```
+
+It checks Python version, `.env` loading, `GEMINI_API_KEY` presence (without
+printing the key), required Python modules, SQLite FTS5 support, and database
+directory writability. It does **not** call Gemini or any network API.
+
+JSON output is available for automation:
+
+```bash
+uv run kirok-doctor --json
+```
+
+If your local environment cannot run the script entry point, use the module form:
+
+```bash
+uv run python -m kirok_mcp.diagnostics
+```
+
 ## 🧪 How It Works
 
 ### The Retain → Recall → Reflect Loop
@@ -496,8 +520,9 @@ uv run python -m unittest discover -s tests
 ```
 
 The tests cover the SQLite database layer, FTS query handling, bank clearing and
-deletion consistency, embedding utilities, and Smart Retain's routing through
-the shared Retain pipeline. They do not call Gemini or any external API.
+deletion consistency, embedding utilities, Smart Retain's routing through the
+shared Retain pipeline, Reflect auto-refresh options, and offline diagnostics.
+They do not call Gemini or any external API.
 
 ---
 
@@ -511,6 +536,27 @@ the shared Retain pipeline. They do not call Gemini or any external API.
 - Run the uv installation command again from [Step 2](#step-2-install-uv-python-package-manager)
 - Close and reopen your terminal / PowerShell after installation
 - On Mac, you may need to restart your shell: `source ~/.zshrc`
+
+</details>
+
+<details>
+<summary><b>Not sure what's wrong with your setup?</b></summary>
+
+Run:
+
+```bash
+uv run kirok-doctor
+```
+
+If that command itself fails because your environment is mid-upgrade or a local
+script is locked, try:
+
+```bash
+uv run python -m kirok_mcp.diagnostics
+```
+
+The diagnostic output is offline and safe to share after checking paths; it never
+prints your Gemini API key.
 
 </details>
 

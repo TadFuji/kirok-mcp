@@ -377,6 +377,30 @@ Kirok は **19 の MCP ツール**を提供します。5つのカテゴリに分
 | `KIROK_REFLECT_TIMEOUT` | ❌ | `300` | Reflect 操作のタイムアウト（秒） |
 | `KIROK_CONSOLIDATION_TIMEOUT` | ❌ | `120` | パターン検出のタイムアウト（秒） |
 
+## 🩺 診断コマンド
+
+セットアップ状態をオフラインで確認できます：
+
+```bash
+uv run kirok-doctor
+```
+
+このコマンドは Python バージョン、`.env` の読み込み、`GEMINI_API_KEY`
+の有無（キーの値は表示しません）、必要な Python モジュール、SQLite FTS5、
+データベース保存先の書き込み可否を確認します。Gemini や外部 API への通信は行いません。
+
+JSON 出力もできます：
+
+```bash
+uv run kirok-doctor --json
+```
+
+スクリプト形式が動かない場合は、モジュール形式を使ってください：
+
+```bash
+uv run python -m kirok_mcp.diagnostics
+```
+
 ## 🧪 仕組み
 
 ### 記憶 → 想起 → 考察 のサイクル
