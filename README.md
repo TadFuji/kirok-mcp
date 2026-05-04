@@ -459,6 +459,10 @@ All configuration is via environment variables in the `.env` file:
    - Indexes in both SQLite and FTS5 for hybrid search
    - Auto-consolidates observations in the background
 
+   **Smart Retain** first asks the LLM to score content importance (1-10).
+   If the score meets the threshold, it runs this same Retain pipeline — including
+   deduplication, UPDATE/NOOP decisions, indexing, and auto-consolidation.
+
 2. **Recall**: When you search, Kirok:
    - Runs semantic search (cosine similarity on embeddings)
    - Runs keyword search (FTS5 with BM25 ranking)
@@ -479,6 +483,20 @@ Memories are organized into **banks** — think of them as folders for your AI's
 - `"projects"` — Project-specific knowledge
 
 Create as many banks as you need. Your AI agent will suggest appropriate bank names as you use Kirok.
+
+---
+
+## 🧑‍💻 Development
+
+Run the unit test suite:
+
+```bash
+uv run python -m unittest discover -s tests
+```
+
+The tests cover the SQLite database layer, FTS query handling, bank clearing and
+deletion consistency, embedding utilities, and Smart Retain's routing through
+the shared Retain pipeline. They do not call Gemini or any external API.
 
 ---
 
