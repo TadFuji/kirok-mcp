@@ -31,6 +31,49 @@ class _FakeLLM:
         return self.evaluation
 
 
+class _FakeReflectDB:
+    def __init__(self):
+        self.insert_calls = []
+
+    def get_all_embeddings(self, bank_id: str) -> list[dict]:
+        return [
+            {
+                "id": "memory-1",
+                "content": "Deploys use staged rollouts.",
+                "embedding": [1.0, 0.0],
+                "timestamp": "2026-05-04T00:00:00+00:00",
+                "context": "",
+                "entities": [],
+                "keywords": [],
+            }
+        ]
+
+    def get_mental_models(self, bank_id: str, limit: int = 10) -> list[dict]:
+        return []
+
+    def insert_mental_model_with_options(self, **kwargs) -> str:
+        self.insert_calls.append(kwargs)
+        return "model-1"
+
+
+class _FakeReflectLLM:
+    async def reflect(
+        self,
+        query: str,
+        memories: list[dict],
+        existing_models: list[dict] | None = None,
+    ) -> dict:
+        return {
+            "topic": "Release Process",
+            "insight": "The team prefers staged rollouts.",
+        }
+
+
+class _FakeEmbedder:
+    async def embed(self, text: str) -> list[float]:
+        return [1.0, 0.0]
+
+
 class SmartRetainTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.original_db = server._db
@@ -114,6 +157,59 @@ class SmartRetainTest(unittest.IsolatedAsyncioTestCase):
                     "timestamp": "2026-05-04T00:00:00+00:00",
                 }
             ],
+        )
+
+
+class ReflectTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.original_db = server._db
+        self.original_llm = server._llm
+        self.original_embedder = server._embedder
+        self.fake_db = _FakeReflectDB()
+        server._db = self.fake_db
+        server._llm = _FakeReflectLLM()
+        server._embedder = _FakeEmbedder()
+
+    def tearDown(self) -> None:
+        server._db = self.original_db
+        server._llm = self.original_llm
+        server._embedder = self.original_embedder
+
+    async def test_reflect_persists_auto_refresh_options(self) -> None:
+        result = await server.KIROK_reflect(
+            bank_id="architecture",
+            query="How do releases work?",
+            limit=20,
+            auto_refresh=True,
+            source_query="release process",
+        )
+
+        self.assertIn("Auto-refresh: enabled", result)
+        self.assertEqual(
+            self.fake_db.insert_calls,
+            [
+                {
+                    "bank_id": "architecture",
+                    "topic": "Release Process",
+                    "insight": "The team prefers staged rollouts.",
+                    "based_on": ["memory-1"],
+                    "auto_refresh": True,
+                    "source_query": "release process",
+                }
+            ],
+        )
+
+    async def test_reflect_defaults_auto_refresh_off_and_uses_query_as_source(self) -> None:
+        result = await server.KIROK_reflect(
+            bank_id="architecture",
+            query="How do releases work?",
+        )
+
+        self.assertIn("Auto-refresh: disabled", result)
+        self.assertEqual(self.fake_db.insert_calls[0]["auto_refresh"], False)
+        self.assertEqual(
+            self.fake_db.insert_calls[0]["source_query"],
+            "How do releases work?",
         )
 
 

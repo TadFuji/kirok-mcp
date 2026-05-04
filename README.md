@@ -397,7 +397,7 @@ Kirok provides **19 MCP tools** organized into five categories:
 |------|-------------|
 | `KIROK_retain` | Store a memory with automatic entity extraction, embedding, and smart deduplication |
 | `KIROK_recall` | Search memories using hybrid semantic + keyword search with RRF |
-| `KIROK_reflect` | Generate insights from accumulated memories, saved as mental models |
+| `KIROK_reflect` | Generate insights from accumulated memories, saved as optionally auto-refreshing mental models |
 | `KIROK_smart_retain` | Score content importance before running the full retain pipeline — ideal for bulk ingestion |
 | `KIROK_consolidate` | Manually trigger observation consolidation |
 
@@ -473,6 +473,7 @@ All configuration is via environment variables in the `.env` file:
    - Retrieves relevant memories via semantic search
    - Sends them to the LLM with existing mental models as context
    - Saves the resulting insight as a new mental model
+   - Can mark that model for auto-refresh after future consolidation
 
 ### Memory Banks
 

@@ -488,6 +488,8 @@ async def KIROK_reflect(
     bank_id: str,
     query: str,
     limit: int = 20,
+    auto_refresh: bool = False,
+    source_query: str = "",
 ) -> str:
     """Reflect on accumulated memories to generate new insights.
 
@@ -498,6 +500,8 @@ async def KIROK_reflect(
         bank_id: Memory bank to reflect on.
         query: What to reflect on (question, topic, or open-ended prompt).
         limit: Max memories to consider (default 20, max 100).
+        auto_refresh: Whether to refresh this model after future consolidations.
+        source_query: Optional query to use for future refreshes. Defaults to query.
     """
     limit = min(max(limit, 1), 100)
 
@@ -528,17 +532,22 @@ async def KIROK_reflect(
         )
 
     memory_ids = [m["id"] for m in relevant]
-    model_id = _db.insert_mental_model(
+    model_id = _db.insert_mental_model_with_options(
         bank_id=bank_id,
         topic=reflection["topic"],
         insight=reflection["insight"],
         based_on=memory_ids,
+        auto_refresh=auto_refresh,
+        source_query=source_query or query,
     )
+
+    auto_refresh_status = "enabled" if auto_refresh else "disabled"
 
     return (
         f"Reflection: {reflection['topic']}\n\n"
         f"{reflection['insight']}\n\n"
-        f"(Based on {len(relevant)} memories | Model ID: {model_id})\n"
+        f"(Based on {len(relevant)} memories | Model ID: {model_id} | "
+        f"Auto-refresh: {auto_refresh_status})\n"
     )
 
 

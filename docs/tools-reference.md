@@ -77,17 +77,21 @@ Generate insights from accumulated memories.
 | `bank_id` | string | ✅ | — | Memory bank to reflect on |
 | `query` | string | ✅ | — | Topic, question, or prompt |
 | `limit` | int | ❌ | `20` | Max memories to analyze (1-100) |
+| `auto_refresh` | bool | ❌ | `false` | Refresh this mental model after future consolidations |
+| `source_query` | string | ❌ | `""` | Query to use for future refreshes (defaults to `query`) |
 
 **Behavior:**
 1. Retrieves relevant memories via semantic search
 2. Sends to LLM with existing mental models
 3. Saves result as a new mental model
+4. If `auto_refresh=true`, future consolidation will refresh it using `source_query`
 
 **Example:**
 ```
 KIROK_reflect(
     bank_id="my-project",
-    query="What architectural patterns have emerged in this project?"
+    query="What architectural patterns have emerged in this project?",
+    auto_refresh=True
 )
 ```
 

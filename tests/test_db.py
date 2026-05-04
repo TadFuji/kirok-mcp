@@ -131,6 +131,25 @@ class MemoryDBTest(unittest.TestCase):
         self.assertIsNone(self.db.get_mental_model(model_id))
         self.assertEqual(self.db.get_bank_config("bank-a")["retain_mission"], "")
 
+    def test_mental_model_options_are_persisted(self) -> None:
+        model_id = self.db.insert_mental_model_with_options(
+            bank_id="bank-a",
+            topic="Release Process",
+            insight="The team prefers staged rollouts.",
+            based_on=["memory-1", "memory-2"],
+            auto_refresh=True,
+            source_query="release process",
+        )
+
+        model = self.db.get_mental_model(model_id)
+        self.assertIsNotNone(model)
+        self.assertEqual(model["based_on"], ["memory-1", "memory-2"])
+        self.assertTrue(model["auto_refresh"])
+        self.assertEqual(model["source_query"], "release process")
+
+        auto_models = self.db.get_auto_refresh_models("bank-a")
+        self.assertEqual([m["id"] for m in auto_models], [model_id])
+
 
 if __name__ == "__main__":
     unittest.main()
