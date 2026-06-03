@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 authors = [
-    { name = "Tadahiko Fujikawa" },
+    { name = "Tadahiro Fujikawa" },
 ]
 keywords = [
     "mcp",

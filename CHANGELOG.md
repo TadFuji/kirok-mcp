@@ -5,6 +5,20 @@ All notable changes to Kirok will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Offline setup diagnostics via the new `kirok-doctor` command
+- `auto_refresh` and `source_query` options for `KIROK_reflect` mental models
+- Initial unit test suite (`test_db`, `test_server`, `test_diagnostics`, `test_embeddings`)
+
+### Changed
+- `KIROK_smart_retain` now routes through the shared retain pipeline
+- Bank clear/delete logic refactored to share a `_delete_bank_data` helper
+
+### Fixed
+- Clearing or deleting a bank now consistently removes its observations, FTS index rows, and bank configuration
+
 ## [1.0.0] - 2026-04-09
 
 ### Added
