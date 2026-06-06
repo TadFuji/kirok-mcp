@@ -11,6 +11,12 @@ from google import genai
 # Embedding model — GA as of July 2025, 2048 max tokens, 100+ languages
 EMBEDDING_MODEL = "gemini-embedding-001"
 
+# Output dimension of gemini-embedding-001 when output_dimensionality is left
+# unset (the model's full-fidelity default). This MUST match both the vec0
+# schema `float[EMBEDDING_DIM]` and the float32 BLOBs already stored in
+# memory.db (12288 bytes = 3072 float32). Do not change without re-embedding.
+EMBEDDING_DIM = 3072
+
 
 class EmbeddingClient:
     """Wrapper for Gemini Embedding API with similarity utilities."""
