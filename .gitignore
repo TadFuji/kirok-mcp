@@ -30,3 +30,6 @@ Thumbs.db
 
 # AI agent handoff files
 AI_HANDOFF.md
+
+# Internal planning/spec artifacts (kept local, not for downstream consumers)
+docs/superpowers/
