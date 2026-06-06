@@ -41,11 +41,14 @@ Thank you for your interest in contributing to Kirok! This document provides gui
 
 ### Running Tests
 
-Run the unit test suite with:
+Run the full test suite (unit tests plus the pytest-style vector-search tests) with:
 
 ```bash
-uv run python -m unittest discover -s tests
+uv run pytest
 ```
+
+The `sqlite-vec` tests skip automatically on platforms where the native
+extension can't load — the brute-force fallback path is exercised separately.
 
 ### Commit Messages
 

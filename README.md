@@ -172,6 +172,10 @@ uv sync
 
 </details>
 
+> **Note**: `uv sync` also installs `sqlite-vec`, which speeds up memory search.
+> If the native extension can't load on your platform, Kirok automatically falls
+> back to built-in brute-force search — same results, just slower.
+
 ### Step 5: Configure Your API Key
 
 <details>
@@ -375,7 +379,7 @@ Add to your workspace or user MCP settings (`.vscode/mcp.json` or VS Code settin
 │  └─────┬─────┘  └────┬─────┘  └──────┬───────┘  │
 │        │             │               │           │
 │  ┌─────▼─────────────▼───────────────▼───────┐   │
-│  │            SQLite + FTS5                   │   │
+│  │         SQLite + FTS5 + sqlite-vec         │   │
 │  │  memories │ models │ observations │ config │   │
 │  └────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────┘
@@ -488,7 +492,7 @@ uv run python -m kirok_mcp.diagnostics
    deduplication, UPDATE/NOOP decisions, indexing, and auto-consolidation.
 
 2. **Recall**: When you search, Kirok:
-   - Runs semantic search (cosine similarity on embeddings)
+   - Runs semantic search (sqlite-vec per-bank vector KNN, with automatic brute-force fallback)
    - Runs keyword search (FTS5 with BM25 ranking)
    - Merges results using [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) (RRF, k=60)
    - Shows consolidated observations first, then supporting memories

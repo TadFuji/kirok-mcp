@@ -84,24 +84,40 @@ bank_config (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 )
+
+-- sqlite-vec KNN index for memory semantic search.
+-- Created only when the sqlite-vec extension loads; rebuilt/reconciled from
+-- `memories` on startup. bank_id is a vec0 PARTITION KEY so KNN is scoped
+-- per-bank. If the extension can't load, this table is absent and search
+-- falls back to brute-force cosine.
+vec_memories USING vec0 (
+    memory_id TEXT PRIMARY KEY,
+    bank_id TEXT PARTITION KEY,
+    embedding float[3072] distance_metric=cosine
+)
 ```
 
 ### 3. Embeddings (`embeddings.py`)
 
 Handles vector operations:
-- **Model**: `gemini-embedding-001` (2048 max tokens, 100+ languages)
-- **Cosine similarity**: NumPy-based computation for ranking
-- **Semantic search**: Brute-force cosine similarity over all bank embeddings
+- **Model**: `gemini-embedding-001` — 3072-dimensional output, 2048 max input tokens, 100+ languages
+- **Cosine similarity**: NumPy-based computation for ranking and the brute-force path
+- **Semantic search**: per-bank sqlite-vec `vec0` cosine KNN for memories (transparent brute-force fallback); brute-force cosine for observations
 - **Reciprocal Rank Fusion**: Merges semantic and keyword rankings
 
-#### Why Brute-Force Search?
+#### Why sqlite-vec with a brute-force fallback?
 
-For typical agent memory usage (hundreds to low thousands of memories per bank), brute-force cosine similarity is:
-- **Fast enough**: ~1ms for 1000 memories on modern hardware
-- **Simple**: No vector DB dependency, no approximate algorithms
-- **Accurate**: Exact similarity, not approximate nearest neighbor
+Memory semantic search runs as a per-bank KNN over a sqlite-vec `vec0` virtual
+table (`vec_memories`). `bank_id` is a vec0 **partition key**, so the KNN is
+scoped to a single bank in SQL — a large bank can never crowd a smaller bank out
+of the results (a hazard of any global-KNN + post-filter approach).
 
-If you need millions of memories, consider adding a vector index (FAISS, HNSW).
+If the native `sqlite-vec` extension cannot load (for example, a Python build
+without extension support), search transparently falls back to exact brute-force
+cosine over the bank — same results, only slower. Brute-force is also used for
+the observation layer and for time-filtered recall (vec0 cannot filter by
+timestamp). For the typical hundreds-to-thousands of memories per bank both
+paths are fast; the vec index keeps recall cheap as banks grow.
 
 ### 4. LLM Client (`llm.py`)
 
@@ -126,7 +142,7 @@ Input: content + context
          │
          ▼
 ┌─────────────────┐
-│ Find Similar     │ ← cosine similarity > 0.85
+│ Find Similar     │ ← vec_search (cosine > 0.85)
 │ Memories         │
 └────────┬────────┘
          │
@@ -162,7 +178,7 @@ Input: query + optional time range
     ▼
 ┌──────────────────────┐     ┌──────────────────────┐
 │ Semantic Search       │     │ FTS5 Keyword Search   │
-│ (cosine similarity)   │     │ (BM25 ranking)        │
+│ (sqlite-vec KNN)      │     │ (BM25 ranking)        │
 └──────────┬───────────┘     └──────────┬───────────┘
            │                            │
            └───────────┬────────────────┘

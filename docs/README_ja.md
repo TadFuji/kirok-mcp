@@ -175,6 +175,8 @@ uv sync
 
 </details>
 
+> **補足**：`uv sync` では検索を高速化する `sqlite-vec` も一緒に入ります。お使いの環境でネイティブ拡張が読めない場合は、自動的に内蔵の総当たり検索にフォールバックします（結果は同じ・速度のみ低下）。
+
 ### ステップ 5：API キーの設定
 
 <details>
@@ -413,7 +415,7 @@ uv run python -m kirok_mcp.diagnostics
    - SQLite と全文検索インデックス（FTS5）の両方に登録
 
 2. **想起（Recall）**：検索すると Kirok は以下を実行します
-   - 意味検索（コサイン類似度）
+   - 意味検索（sqlite-vec によるバンク単位のベクトル KNN、拡張が読めない環境では総当たりに自動フォールバック）
    - キーワード検索（FTS5 + BM25 ランキング）
    - 両方の結果を [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) で統合
    - 検出されたパターンを優先表示、続いて個別の記憶を表示

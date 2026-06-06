@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-06
+
 ### Added
+- Per-bank sqlite-vec `vec0` KNN for memory semantic search, with transparent fallback to brute-force cosine when the native extension is unavailable
+- `sqlite-vec` runtime dependency, an `EMBEDDING_DIM = 3072` constant, and a startup migration that backfills and reconciles the `vec_memories` table from stored embeddings
 - Offline setup diagnostics via the new `kirok-doctor` command
 - `auto_refresh` and `source_query` options for `KIROK_reflect` mental models
-- Initial unit test suite (`test_db`, `test_server`, `test_diagnostics`, `test_embeddings`)
+- Test suite covering db, server, diagnostics, embeddings, and vector search (`test_vec_*`); `pytest` dev dependency
 
 ### Changed
 - `KIROK_smart_retain` now routes through the shared retain pipeline
