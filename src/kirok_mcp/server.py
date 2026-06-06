@@ -146,8 +146,7 @@ async def _run_consolidation(bank_id: str) -> str:
             try:
                 query = model.get("source_query") or model["topic"]
                 query_emb = await _embedder.embed(query)
-                all_mems = _db.get_all_embeddings(bank_id)
-                relevant = semantic_search(query_emb, all_mems, top_k=20)
+                relevant = _db.vec_search(query_emb, bank_id, top_k=20)
                 if relevant:
                     reflection = await _llm.reflect(
                         query=query,
@@ -191,9 +190,8 @@ async def _retain_memory(
     embedding = await _embedder.embed(content)
 
     # ── Smart Deduplication: check for similar existing memories ──
-    all_memories = _db.get_all_embeddings(bank_id)
-    if all_memories:
-        similar = semantic_search(embedding, all_memories, top_k=5)
+    similar = _db.vec_search(embedding, bank_id, top_k=5)
+    if similar:
         # Filter to only highly similar memories
         highly_similar = [
             m for m in similar
@@ -408,10 +406,11 @@ async def KIROK_recall(
         return "Error: query must not be empty. Please provide a search term."
 
     query_embedding = await _embedder.embed(query)
-    all_memories = _db.get_all_embeddings(bank_id)
 
-    # Apply time filtering before semantic search if specified
+    # Time-filtered recall stays on the brute-force path (vec0 cannot filter by
+    # timestamp); otherwise use the fast vec_search KNN.
     if time_min or time_max:
+        all_memories = _db.get_all_embeddings(bank_id)
         filtered = []
         for m in all_memories:
             ts = m.get("timestamp", "")
@@ -420,9 +419,9 @@ async def KIROK_recall(
             if time_max and ts > time_max:
                 continue
             filtered.append(m)
-        all_memories = filtered
-
-    semantic_results = semantic_search(query_embedding, all_memories, top_k=limit)
+        semantic_results = semantic_search(query_embedding, filtered, top_k=limit)
+    else:
+        semantic_results = _db.vec_search(query_embedding, bank_id, top_k=limit)
 
     fts_results = _db.fts_search(bank_id, query, limit=limit)
     # Apply time filtering to FTS results as well
@@ -506,8 +505,7 @@ async def KIROK_reflect(
     limit = min(max(limit, 1), 100)
 
     query_embedding = await _embedder.embed(query)
-    all_memories = _db.get_all_embeddings(bank_id)
-    relevant = semantic_search(query_embedding, all_memories, top_k=limit)
+    relevant = _db.vec_search(query_embedding, bank_id, top_k=limit)
 
     if not relevant:
         return f"No memories found in bank '{bank_id}' to reflect on."
@@ -933,8 +931,7 @@ async def KIROK_refresh_mental_model(
     bank_id = model["bank_id"]
 
     query_embedding = await _embedder.embed(query)
-    all_memories = _db.get_all_embeddings(bank_id)
-    relevant = semantic_search(query_embedding, all_memories, top_k=limit)
+    relevant = _db.vec_search(query_embedding, bank_id, top_k=limit)
 
     if not relevant:
         return f"No memories found in bank '{bank_id}' to refresh model with."

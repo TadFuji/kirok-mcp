@@ -48,6 +48,21 @@ class _FakeReflectDB:
             }
         ]
 
+    def vec_search(
+        self,
+        query_embedding: list,
+        bank_id: str,
+        top_k: int,
+        *,
+        candidate_multiplier: int = 5,
+    ) -> list[dict]:
+        # Mirror the real vec_search contract: brute-force candidates plus a
+        # cosine 'similarity', trimmed to top_k.
+        return [
+            {**m, "similarity": 1.0}
+            for m in self.get_all_embeddings(bank_id)[:top_k]
+        ]
+
     def get_mental_models(self, bank_id: str, limit: int = 10) -> list[dict]:
         return []
 

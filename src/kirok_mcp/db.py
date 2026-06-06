@@ -16,6 +16,13 @@ from uuid import uuid4
 
 import re
 
+try:
+    import sqlite_vec
+except ImportError:  # pragma: no cover - optional accelerator, brute-force fallback
+    sqlite_vec = None
+
+from kirok_mcp.embeddings import EMBEDDING_DIM, semantic_search
+
 
 logger = logging.getLogger("kirok.db")
 
@@ -92,6 +99,9 @@ class MemoryDB:
     def __init__(self, db_path: str | Path | None = None):
         self.db_path = _resolve_db_path(db_path)
         self.conn: Optional[sqlite3.Connection] = None
+        # Set True in connect() once the sqlite-vec extension loads successfully.
+        # When False, all vector search transparently falls back to brute force.
+        self._vec_available: bool = False
 
     def connect(self) -> None:
         """Open database connection and initialize schema."""
@@ -99,7 +109,41 @@ class MemoryDB:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        self._load_vec_extension()
         self._init_schema()
+
+    def _load_vec_extension(self) -> None:
+        """Load the sqlite-vec extension if available.
+
+        On success sets ``self._vec_available = True`` so the schema setup can
+        create the ``vec_memories`` virtual table. On any failure (extension not
+        installed, Python built without ``enable_load_extension``, etc.) we log a
+        warning and leave ``_vec_available`` False — searches then use the
+        existing brute-force cosine path.
+        """
+        assert self.conn is not None
+
+        if sqlite_vec is None:
+            logger.warning(
+                "sqlite-vec unavailable, falling back to brute-force search.\n"
+                "Install sqlite-vec for improved performance at scale."
+            )
+            self._vec_available = False
+            return
+
+        try:
+            self.conn.enable_load_extension(True)
+            sqlite_vec.load(self.conn)
+            self.conn.enable_load_extension(False)
+            self._vec_available = True
+        except Exception as e:
+            logger.warning(
+                "sqlite-vec unavailable, falling back to brute-force search.\n"
+                "Install sqlite-vec for improved performance at scale.\n"
+                "Reason: %s",
+                e,
+            )
+            self._vec_available = False
 
     def close(self) -> None:
         """Close database connection."""
@@ -185,7 +229,130 @@ class MemoryDB:
         # Schema migrations for existing databases
         self._migrate_schema()
 
+        # sqlite-vec virtual table for fast KNN search (only when the extension
+        # loaded). The width is derived from EMBEDDING_DIM so the schema can
+        # never drift from the stored vectors.
+        if self._vec_available:
+            self._init_vec_schema()
+
         self.conn.commit()
+
+        # Backfill the vec table from existing memories. Done after commit so the
+        # base schema is durable before the (potentially large) migration runs.
+        if self._vec_available:
+            self._migrate_vectors_to_vec_table()
+
+    def _init_vec_schema(self) -> None:
+        """Create (or repair) the vec_memories virtual table.
+
+        The table carries ``bank_id`` as a vec0 *partition key* so KNN search is
+        scoped per-bank in SQL (``WHERE bank_id = ? AND embedding MATCH ?``). This
+        is essential: vec0 otherwise ranks globally across all banks, and a large
+        bank would crowd a smaller bank out of any over-fetch window — breaking
+        recall and dedup for the small bank. Cosine distance matches the
+        brute-force cosine path so the dedup threshold (0.85) stays meaningful.
+
+        ``CREATE VIRTUAL TABLE IF NOT EXISTS`` matches by name only, so a stale
+        table with the wrong width (e.g. a reverted ``float[768]`` attempt) or
+        without the partition key would be silently kept. We therefore detect
+        either mismatch and DROP before recreating; the next migration backfills.
+        """
+        assert self.conn is not None
+
+        existing = self.conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='vec_memories'"
+        ).fetchone()
+        if existing is not None:
+            sql = existing["sql"]
+            wrong_width = f"float[{EMBEDDING_DIM}]" not in sql
+            missing_partition = "partition key" not in sql.lower()
+            if wrong_width or missing_partition:
+                reason = "width != %s" % EMBEDDING_DIM if wrong_width else "no bank_id partition key"
+                logger.warning(
+                    "Dropping stale vec_memories (%s) before recreate", reason
+                )
+                self.conn.execute("DROP TABLE vec_memories")
+
+        self.conn.execute(
+            f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(
+                memory_id TEXT PRIMARY KEY,
+                bank_id TEXT partition key,
+                embedding float[{EMBEDDING_DIM}] distance_metric=cosine
+            )
+            """
+        )
+
+    def _migrate_vectors_to_vec_table(self) -> None:
+        """Reconcile vec_memories with memories.embedding.
+
+        Rebuilds the vec table whenever its memory_id set differs from the set of
+        memories carrying a correctly-sized embedding — in EITHER direction. This
+        self-heals missing rows (inserts made while the extension was unavailable)
+        AND orphan rows (deletes made while it was unavailable); a one-directional
+        count guard would catch neither. The rebuild is a single-transaction
+        DELETE-all + batched re-insert, because vec0 has no INSERT OR REPLACE on
+        its TEXT primary key.
+
+        The steady-state (in-sync) check fetches only ids — never the embedding
+        BLOBs — so it stays cheap on large databases. Embeddings are loaded only
+        when an actual drift is detected and a rebuild is needed.
+        """
+        assert self.conn is not None
+        if not self._vec_available:
+            return
+
+        # Only correctly-sized vectors belong in the float[EMBEDDING_DIM] table;
+        # off-size vectors (e.g. test fixtures) stay on the brute-force path.
+        expected_bytes = EMBEDDING_DIM * 4  # float32 = 4 bytes each
+        mem_ids = {
+            r["id"]
+            for r in self.conn.execute(
+                "SELECT id FROM memories "
+                "WHERE embedding IS NOT NULL AND length(embedding) = ?",
+                (expected_bytes,),
+            )
+        }
+        vec_ids = {
+            r["memory_id"]
+            for r in self.conn.execute("SELECT memory_id FROM vec_memories")
+        }
+        if mem_ids == vec_ids:
+            return
+
+        logger.info(
+            "Reconciling vec_memories (%s memories, %s vec rows)",
+            len(mem_ids),
+            len(vec_ids),
+        )
+
+        rows = self.conn.execute(
+            "SELECT id, bank_id, embedding FROM memories "
+            "WHERE embedding IS NOT NULL AND length(embedding) = ?",
+            (expected_bytes,),
+        ).fetchall()
+
+        try:
+            # Clean rebuild from memories (the source of truth) repairs drift in
+            # either direction in one shot.
+            self.conn.execute("DELETE FROM vec_memories")
+            batch_size = 500
+            done = 0
+            total = len(rows)
+            for start in range(0, total, batch_size):
+                chunk = rows[start:start + batch_size]
+                self.conn.executemany(
+                    "INSERT INTO vec_memories (memory_id, bank_id, embedding) "
+                    "VALUES (?, ?, ?)",
+                    [(r["id"], r["bank_id"], r["embedding"]) for r in chunk],
+                )
+                done += len(chunk)
+                logger.info("Migrating vectors: %s/%s", done, total)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def _migrate_schema(self) -> None:
         """Apply incremental schema changes to existing tables."""
@@ -256,6 +423,21 @@ class MemoryDB:
                 (memory_id, bank_id, content, " ".join(ent), " ".join(kw), context),
             )
 
+            # Keep the vec index in sync (fresh id, no conflict possible). Only
+            # well-formed EMBEDDING_DIM vectors belong in the float[EMBEDDING_DIM]
+            # table; off-size vectors (e.g. test fixtures) stay searchable via the
+            # brute-force path instead of corrupting the index.
+            if (
+                self._vec_available
+                and emb_blob is not None
+                and len(embedding) == EMBEDDING_DIM
+            ):
+                self.conn.execute(
+                    "INSERT INTO vec_memories (memory_id, bank_id, embedding) "
+                    "VALUES (?, ?, ?)",
+                    (memory_id, bank_id, emb_blob),
+                )
+
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -322,6 +504,119 @@ class MemoryDB:
                 "keywords": json.loads(r["keywords"]),
             })
         return results
+
+    def _brute_force_search(
+        self, query_embedding: list[float], bank_id: str, top_k: int
+    ) -> list[dict[str, Any]]:
+        """Brute-force cosine search over all embeddings in a bank.
+
+        This is the fallback path for ``vec_search`` and is also called directly
+        by tests. Returns dicts identical to ``get_all_embeddings`` entries plus
+        a ``similarity`` score.
+        """
+        candidates = self.get_all_embeddings(bank_id)
+        return semantic_search(query_embedding, candidates, top_k=top_k)
+
+    def vec_search(
+        self,
+        query_embedding: list[float],
+        bank_id: str,
+        top_k: int,
+        *,
+        candidate_multiplier: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Per-bank KNN vector search via sqlite-vec.
+
+        ``bank_id`` is a vec0 partition key, so the KNN itself is scoped to the
+        bank (``WHERE bank_id = ? AND embedding MATCH ?``), returning exactly the
+        bank's nearest neighbours — true parity with the per-bank brute-force
+        path, with no cross-bank crowd-out.
+
+        Falls back to brute-force cosine when: the extension is unavailable, the
+        KNN errors, or the vec table returns fewer hits than the bank actually
+        holds (a sign vec_memories is out of sync). Each result mirrors
+        ``get_all_embeddings`` entries plus a cosine ``similarity``
+        (``1 - distance``, clamped >= 0) so RRF and the dedup threshold keep
+        working unchanged.
+
+        ``candidate_multiplier`` is retained for API compatibility; per-bank KNN
+        needs no over-fetch window, so it no longer affects results.
+        """
+        assert self.conn is not None
+
+        if not self._vec_available:
+            return self._brute_force_search(query_embedding, bank_id, top_k)
+
+        try:
+            query_blob = _serialize_vector(query_embedding)
+            knn_rows = self.conn.execute(
+                """SELECT memory_id, distance
+                   FROM vec_memories
+                   WHERE bank_id = ? AND embedding MATCH ?
+                   ORDER BY distance
+                   LIMIT ?""",
+                (bank_id, query_blob, max(top_k, 1)),
+            ).fetchall()
+        except Exception as e:
+            logger.warning(
+                "vec_search failed, falling back to brute-force search: %s", e
+            )
+            return self._brute_force_search(query_embedding, bank_id, top_k)
+
+        # Safety net: if the vec table returned fewer hits than the bank actually
+        # holds, vec_memories is out of sync (e.g. an out-of-band edit). Fall back
+        # to the authoritative brute-force path rather than silently under-return.
+        if len(knn_rows) < top_k:
+            bank_count = self.conn.execute(
+                "SELECT COUNT(*) FROM memories "
+                "WHERE bank_id = ? AND embedding IS NOT NULL "
+                "AND length(embedding) = ?",
+                (bank_id, EMBEDDING_DIM * 4),
+            ).fetchone()[0]
+            if len(knn_rows) < min(top_k, bank_count):
+                logger.warning(
+                    "vec_memories under-returned for bank %s (%s of %s); "
+                    "falling back to brute-force search",
+                    bank_id,
+                    len(knn_rows),
+                    bank_count,
+                )
+                return self._brute_force_search(query_embedding, bank_id, top_k)
+
+        if not knn_rows:
+            return []
+
+        distances = {r["memory_id"]: r["distance"] for r in knn_rows}
+        ids = list(distances.keys())
+        placeholders = ",".join("?" for _ in ids)
+        # ids come from this bank's vec partition, so the join stays bank-scoped.
+        mem_rows = self.conn.execute(
+            f"""SELECT id, content, embedding, timestamp,
+                       context, entities, keywords
+                FROM memories
+                WHERE id IN ({placeholders})""",
+            ids,
+        ).fetchall()
+
+        results = []
+        for r in mem_rows:
+            similarity = max(0.0, 1.0 - float(distances[r["id"]]))
+            results.append({
+                "id": r["id"],
+                "content": r["content"],
+                "embedding": (
+                    _deserialize_vector(r["embedding"]) if r["embedding"] else []
+                ),
+                "timestamp": r["timestamp"],
+                "context": r["context"],
+                "entities": json.loads(r["entities"]),
+                "keywords": json.loads(r["keywords"]),
+                "similarity": similarity,
+            })
+
+        # KNN distance order == similarity desc; re-sort after the metadata join.
+        results.sort(key=lambda x: x["similarity"], reverse=True)
+        return results[:top_k]
 
     # ── Recall: Get Memory by ID ──────────────────────────────────────
 
@@ -450,9 +745,17 @@ class MemoryDB:
         if not row:
             return False
 
-        self.conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-        self.conn.execute("DELETE FROM fts_memories WHERE id = ?", (memory_id,))
-        self.conn.commit()
+        try:
+            self.conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            self.conn.execute("DELETE FROM fts_memories WHERE id = ?", (memory_id,))
+            if self._vec_available:
+                self.conn.execute(
+                    "DELETE FROM vec_memories WHERE memory_id = ?", (memory_id,)
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
         return True
 
     # ── List Memories (Browsing) ──────────────────────────────────────
@@ -560,6 +863,24 @@ class MemoryDB:
                     new_context,
                 ),
             )
+
+            # Keep the vec index in sync. vec0 has no INSERT OR REPLACE on a TEXT
+            # primary key, so delete-then-insert. If the embedding became NULL we
+            # just remove the stale vec row.
+            if self._vec_available:
+                self.conn.execute(
+                    "DELETE FROM vec_memories WHERE memory_id = ?", (memory_id,)
+                )
+                if (
+                    new_emb_blob is not None
+                    and len(new_emb_blob) == EMBEDDING_DIM * 4  # 4 bytes / float32
+                ):
+                    self.conn.execute(
+                        "INSERT INTO vec_memories (memory_id, bank_id, embedding) "
+                        "VALUES (?, ?, ?)",
+                        (memory_id, row["bank_id"], new_emb_blob),
+                    )
+
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -670,6 +991,12 @@ class MemoryDB:
                 "(SELECT id FROM observations WHERE bank_id = ?)",
                 (bank_id,),
             )
+            # bank_id is a vec0 partition key, so we can delete this bank's vec
+            # rows directly (no dependency on the memories rows still existing).
+            if self._vec_available:
+                self.conn.execute(
+                    "DELETE FROM vec_memories WHERE bank_id = ?", (bank_id,)
+                )
             self.conn.execute("DELETE FROM memories WHERE bank_id = ?", (bank_id,))
             self.conn.execute(
                 "DELETE FROM observations WHERE bank_id = ?", (bank_id,)

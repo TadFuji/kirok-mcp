@@ -72,6 +72,12 @@ def semantic_search(
     """
     scored = []
     for item in candidates:
+        # Skip candidates whose stored vector width does not match the query.
+        # cosine_similarity (np.dot) would otherwise raise on mismatched shapes;
+        # this keeps the brute-force path aligned with vec_search, which also
+        # excludes off-size vectors from the index.
+        if len(item["embedding"]) != len(query_embedding):
+            continue
         sim = cosine_similarity(query_embedding, item["embedding"])
         scored.append({**item, "similarity": sim})
 
