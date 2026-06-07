@@ -26,8 +26,12 @@ class _FakeLLM:
         self.evaluation = evaluation
         self.importance_calls = []
 
-    async def evaluate_importance(self, content: str, mission: str = "") -> dict:
-        self.importance_calls.append({"content": content, "mission": mission})
+    async def evaluate_importance(
+        self, content: str, mission: str = "", threshold: int = 5
+    ) -> dict:
+        self.importance_calls.append(
+            {"content": content, "mission": mission, "threshold": threshold}
+        )
         return self.evaluation
 
 
@@ -132,6 +136,7 @@ class SmartRetainTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "content": "temporary note",
                     "mission": "retain durable project knowledge",
+                    "threshold": 5,
                 }
             ],
         )
@@ -226,6 +231,80 @@ class ReflectTest(unittest.IsolatedAsyncioTestCase):
             self.fake_db.insert_calls[0]["source_query"],
             "How do releases work?",
         )
+
+
+class _FakeRecallDB:
+    def vec_search(
+        self,
+        query_embedding: list,
+        bank_id: str,
+        top_k: int,
+        *,
+        candidate_multiplier: int = 5,
+    ) -> list[dict]:
+        return [
+            {
+                "id": "mem-1",
+                "content": "User prefers dark mode.",
+                "embedding": [1.0, 0.0],
+                "timestamp": "2026-05-04T00:00:00+00:00",
+                "context": "",
+                "entities": ["dark mode"],
+                "keywords": [],
+                "similarity": 0.92,
+            }
+        ][:top_k]
+
+    def fts_search(self, bank_id: str, query: str, limit: int = 20) -> list[dict]:
+        return [{"id": "mem-1", "content": "User prefers dark mode.", "score": -1.2}]
+
+    def get_observation_embeddings(self, bank_id: str) -> list[dict]:
+        return [
+            {
+                "id": "obs-1",
+                "content": "User consistently prefers a dark UI.",
+                "embedding": [1.0, 0.0],
+                "timestamp": "2026-05-04T00:00:00+00:00",
+                "source_memory_ids": ["mem-1"],
+            }
+        ]
+
+
+class _FakeRecallEmbedder:
+    async def embed(self, text: str) -> list[float]:
+        return [1.0, 0.0]
+
+
+class RecallOutputTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.original_db = server._db
+        self.original_embedder = server._embedder
+        server._db = _FakeRecallDB()
+        server._embedder = _FakeRecallEmbedder()
+
+    def tearDown(self) -> None:
+        server._db = self.original_db
+        server._embedder = self.original_embedder
+
+    async def test_recall_is_compact_by_default(self) -> None:
+        result = await server.KIROK_recall(bank_id="user-prefs", query="dark mode")
+
+        # Content and IDs stay (IDs are needed for follow-up get/update/forget).
+        self.assertIn("User prefers dark mode.", result)
+        self.assertIn("mem-1", result)
+        self.assertIn("obs-1", result)
+        # Relevance scores are omitted by default to save context tokens.
+        self.assertNotIn("RRF:", result)
+        self.assertNotIn("Sim:", result)
+
+    async def test_recall_verbose_includes_scores(self) -> None:
+        result = await server.KIROK_recall(
+            bank_id="user-prefs", query="dark mode", verbose=True
+        )
+
+        self.assertIn("RRF:", result)
+        self.assertIn("Sim:", result)
+        self.assertIn("mem-1", result)
 
 
 if __name__ == "__main__":

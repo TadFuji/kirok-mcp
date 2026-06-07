@@ -25,8 +25,13 @@ class EmbeddingClient:
         self.client = genai.Client(api_key=api_key)
 
     async def embed(self, text: str) -> list[float]:
-        """Generate embedding vector for a single text input."""
-        result = self.client.models.embed_content(
+        """Generate embedding vector for a single text input.
+
+        Uses the SDK's async client (``client.aio``) so the call yields to the
+        event loop instead of blocking it — this is what lets concurrent MCP
+        requests overlap and lets ``asyncio.wait_for`` timeouts actually fire.
+        """
+        result = await self.client.aio.models.embed_content(
             model=EMBEDDING_MODEL,
             contents=text,
         )
@@ -37,7 +42,7 @@ class EmbeddingClient:
         if not texts:
             return []
 
-        result = self.client.models.embed_content(
+        result = await self.client.aio.models.embed_content(
             model=EMBEDDING_MODEL,
             contents=texts,
         )

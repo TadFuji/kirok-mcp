@@ -1410,6 +1410,20 @@ class MemoryDB:
             for r in rows
         ]
 
+    def count_unconsolidated_memories(self, bank_id: str) -> int:
+        """Count memories not yet consolidated.
+
+        A cheap ``COUNT(*)`` that never hydrates rows, used to debounce
+        auto-consolidation (only run it once enough memories have accumulated).
+        """
+        assert self.conn is not None
+
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM memories "
+            "WHERE bank_id = ? AND consolidated_at IS NULL",
+            (bank_id,),
+        ).fetchone()[0]
+
     def mark_memories_consolidated(
         self, memory_ids: list[str]
     ) -> None:

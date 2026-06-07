@@ -34,6 +34,10 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DB_PATH = os.environ.get("KIROK_DB_PATH", None)
 REFLECT_TIMEOUT = int(os.environ.get("KIROK_REFLECT_TIMEOUT", "300"))
 CONSOLIDATION_TIMEOUT = int(os.environ.get("KIROK_CONSOLIDATION_TIMEOUT", "120"))
+# Auto-consolidation is debounced: rather than running after every retain (a
+# large LLM call plus embeddings), it runs only once at least this many memories
+# are pending. Set to 1 to restore the old "consolidate on every retain".
+CONSOLIDATION_BATCH_SIZE = int(os.environ.get("KIROK_CONSOLIDATION_BATCH_SIZE", "5"))
 
 if not GEMINI_API_KEY:
     print("ERROR: GEMINI_API_KEY environment variable is required.", file=sys.stderr)
@@ -176,6 +180,38 @@ async def _run_consolidation(bank_id: str) -> str:
     )
 
 
+async def _maybe_consolidate(bank_id: str) -> None:
+    """Run auto-consolidation, debounced by CONSOLIDATION_BATCH_SIZE.
+
+    Consolidation is comparatively expensive (a large LLM call plus an embedding
+    per observation, and possibly mental-model refresh), so we don't run it after
+    every single retain. Instead we wait until enough memories are pending. Any
+    error is logged and swallowed so a consolidation hiccup never fails the
+    retain that triggered it; the leftover memories simply roll into the next
+    batch (or a manual ``KIROK_consolidate``).
+    """
+    try:
+        pending = _db.count_unconsolidated_memories(bank_id)
+    except Exception as e:
+        logger.warning(
+            "Could not count unconsolidated memories for '%s': %s", bank_id, e
+        )
+        return
+
+    if pending < CONSOLIDATION_BATCH_SIZE:
+        return
+
+    try:
+        await asyncio.wait_for(
+            _run_consolidation(bank_id),
+            timeout=CONSOLIDATION_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Auto-consolidation timed out for bank '%s'", bank_id)
+    except Exception as e:
+        logger.warning("Auto-consolidation failed for bank '%s': %s", bank_id, e)
+
+
 async def _retain_memory(
     bank_id: str,
     content: str,
@@ -240,16 +276,9 @@ async def _retain_memory(
                         f"- Keywords: {', '.join(extraction['keywords']) or '(none)'}\n"
                     )
 
-                    # Trigger consolidation after update
-                    try:
-                        consolidation_result = await asyncio.wait_for(
-                            _run_consolidation(bank_id),
-                            timeout=CONSOLIDATION_TIMEOUT,
-                        )
-                        result += f"\n📊 Auto-Consolidation:\n{consolidation_result}\n"
-                    except (asyncio.TimeoutError, Exception) as e:
-                        logger.warning("Auto-consolidation after update: %s", e)
-
+                    # Debounced background-style consolidation (runs only once
+                    # enough memories are pending; never appended to the reply).
+                    await _maybe_consolidate(bank_id)
                     return result
                 # If update failed (ID not found), fall through to ADD
 
@@ -278,20 +307,10 @@ async def _retain_memory(
         f"- Keywords: {keywords_str}\n"
     )
 
-    # Trigger background consolidation (fire-and-forget, non-blocking)
-    try:
-        consolidation_result = await asyncio.wait_for(
-            _run_consolidation(bank_id),
-            timeout=CONSOLIDATION_TIMEOUT,
-        )
-        result += f"\n📊 Auto-Consolidation:\n{consolidation_result}\n"
-    except asyncio.TimeoutError:
-        logger.warning("Auto-consolidation timed out for bank '%s'", bank_id)
-        result += "\n⚠️ Auto-consolidation timed out (memories will be consolidated on next retain).\n"
-    except Exception as e:
-        logger.warning("Auto-consolidation failed for bank '%s': %s", bank_id, e)
-        result += "\n⚠️ Auto-consolidation encountered an error (memory was still saved).\n"
-
+    # Debounced auto-consolidation (runs only once enough memories are pending;
+    # kept off the reply to save tokens). Leftovers roll into the next batch or
+    # a manual KIROK_consolidate.
+    await _maybe_consolidate(bank_id)
     return result
 
 
@@ -353,9 +372,11 @@ async def KIROK_smart_retain(
     config = _db.get_bank_config(bank_id)
     mission = config.get("retain_mission", "")
 
-    evaluation = await _llm.evaluate_importance(content, mission=mission)
+    evaluation = await _llm.evaluate_importance(
+        content, mission=mission, threshold=threshold
+    )
 
-    if not evaluation["should_retain"] or evaluation["score"] < threshold:
+    if not evaluation["should_retain"]:
         return (
             f"Content not retained (below threshold).\n\n"
             f"- Score: {evaluation['score']}/10 (threshold: {threshold})\n"
@@ -388,6 +409,7 @@ async def KIROK_recall(
     limit: int = 10,
     time_min: str = "",
     time_max: str = "",
+    verbose: bool = False,
 ) -> str:
     """Search and retrieve relevant memories using semantic similarity
     and keyword matching, merged with Reciprocal Rank Fusion.
@@ -398,6 +420,9 @@ async def KIROK_recall(
         limit: Maximum number of results (default 10, max 50).
         time_min: Optional ISO 8601 lower bound for timestamp filtering.
         time_max: Optional ISO 8601 upper bound for timestamp filtering.
+        verbose: If True, also show relevance scores (RRF/Sim) per item.
+            Default False keeps the output compact (content + ID only) to
+            save context tokens.
     """
     limit = min(max(limit, 1), 50)
 
@@ -456,10 +481,13 @@ async def KIROK_recall(
     # ── Observations first (consolidated knowledge) ──
     if relevant_obs:
         lines.append("── Consolidated Knowledge (Observations) ──\n")
-        for i, obs in enumerate(relevant_obs, 1):
-            sim = obs.get("similarity", 0)
+        for obs in relevant_obs:
             lines.append(f"★ {obs['content']}")
-            lines.append(f"  (Observation ID: {obs['id']} | Sim: {sim:.4f})\n")
+            if verbose:
+                sim = obs.get("similarity", 0)
+                lines.append(f"  (Observation ID: {obs['id']} | Sim: {sim:.4f})\n")
+            else:
+                lines.append(f"  (Observation ID: {obs['id']})\n")
 
     # ── Individual memories ──
     if top_results:
@@ -467,15 +495,18 @@ async def KIROK_recall(
             lines.append("── Supporting Memories ──\n")
 
         for i, mem in enumerate(top_results, 1):
-            sim = mem.get("similarity", mem.get("score", 0))
-            rrf = mem.get("rrf_score", 0)
             ts = mem.get("timestamp", "unknown")
             entities = mem.get("entities", [])
             ent_str = f" | Entities: {', '.join(entities)}" if entities else ""
 
             lines.append(f"{i}. [{ts}]{ent_str}")
             lines.append(f"   {mem['content']}")
-            lines.append(f"   (ID: {mem['id']} | RRF: {rrf:.4f} | Sim: {sim:.4f})\n")
+            if verbose:
+                sim = mem.get("similarity", mem.get("score", 0))
+                rrf = mem.get("rrf_score", 0)
+                lines.append(f"   (ID: {mem['id']} | RRF: {rrf:.4f} | Sim: {sim:.4f})\n")
+            else:
+                lines.append(f"   (ID: {mem['id']})\n")
 
     return "\n".join(lines)
 

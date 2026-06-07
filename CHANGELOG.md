@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Embedding and LLM calls now use the async Gemini client (`client.aio`) instead of blocking calls, so concurrent requests overlap and `KIROK_REFLECT_TIMEOUT` / `KIROK_CONSOLIDATION_TIMEOUT` actually take effect (they previously could not interrupt a blocking SDK call)
+- Auto-consolidation is now debounced: it runs once at least `KIROK_CONSOLIDATION_BATCH_SIZE` (default 5) memories are pending, instead of after every retain — cutting `KIROK_retain` latency and Gemini token usage. The consolidation report is no longer appended to the retain reply
+- `KIROK_recall` output is compact by default (content + ID only); pass `verbose=true` to include RRF/Sim relevance scores
+
+### Added
+- `KIROK_CONSOLIDATION_BATCH_SIZE` environment variable (default 5) to tune auto-consolidation debouncing (set to 1 to restore per-retain consolidation)
+- `verbose` parameter on `KIROK_recall`
+- `MemoryDB.count_unconsolidated_memories` helper
+
+### Fixed
+- `KIROK_smart_retain` now honors `threshold` values below 5. Previously a hardcoded `score >= 5` floor in importance evaluation silently overrode lower thresholds, so `threshold=3` could never retain a score-3/4 item (e.g. a subtle preference)
+
 ## [1.1.0] - 2026-06-06
 
 ### Added

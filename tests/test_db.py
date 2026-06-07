@@ -131,6 +131,21 @@ class MemoryDBTest(unittest.TestCase):
         self.assertIsNone(self.db.get_mental_model(model_id))
         self.assertEqual(self.db.get_bank_config("bank-a")["retain_mission"], "")
 
+    def test_count_unconsolidated_memories_is_bank_scoped(self) -> None:
+        self.assertEqual(self.db.count_unconsolidated_memories("bank-c"), 0)
+
+        m1 = self.db.insert_memory("bank-c", "one", embedding=[1.0, 0.0])
+        self.db.insert_memory("bank-c", "two", embedding=[1.0, 0.0])
+        self.assertEqual(self.db.count_unconsolidated_memories("bank-c"), 2)
+
+        # Consolidating one drops the pending count.
+        self.db.mark_memories_consolidated([m1])
+        self.assertEqual(self.db.count_unconsolidated_memories("bank-c"), 1)
+
+        # A different bank does not affect the count.
+        self.db.insert_memory("bank-d", "other", embedding=[1.0, 0.0])
+        self.assertEqual(self.db.count_unconsolidated_memories("bank-c"), 1)
+
     def test_mental_model_options_are_persisted(self) -> None:
         model_id = self.db.insert_mental_model_with_options(
             bank_id="bank-a",

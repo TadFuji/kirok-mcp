@@ -450,6 +450,7 @@ All configuration is via environment variables in the `.env` file:
 | `KIROK_DEDUP_THRESHOLD` | ❌ | `0.85` | Similarity threshold for deduplication (0.0–1.0) |
 | `KIROK_REFLECT_TIMEOUT` | ❌ | `300` | Timeout in seconds for reflect operations |
 | `KIROK_CONSOLIDATION_TIMEOUT` | ❌ | `120` | Timeout in seconds for consolidation |
+| `KIROK_CONSOLIDATION_BATCH_SIZE` | ❌ | `5` | Run auto-consolidation only once this many memories are pending (set `1` to consolidate on every retain) |
 
 ## 🩺 Diagnostics
 
@@ -485,7 +486,7 @@ uv run python -m kirok_mcp.diagnostics
    - Checks for duplicates using cosine similarity (> 0.85 threshold)
    - If similar memories exist: decides to ADD, UPDATE existing, or SKIP
    - Indexes in both SQLite and FTS5 for hybrid search
-   - Auto-consolidates observations in the background
+   - Auto-consolidates observations once enough memories are pending (debounced by `KIROK_CONSOLIDATION_BATCH_SIZE`, default 5)
 
    **Smart Retain** first asks the LLM to score content importance (1-10).
    If the score meets the threshold, it runs this same Retain pipeline — including
@@ -496,6 +497,7 @@ uv run python -m kirok_mcp.diagnostics
    - Runs keyword search (FTS5 with BM25 ranking)
    - Merges results using [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) (RRF, k=60)
    - Shows consolidated observations first, then supporting memories
+   - Returns a compact result by default (content + ID); pass `verbose=true` for relevance scores
 
 3. **Reflect**: When you reflect, Kirok:
    - Retrieves relevant memories via semantic search

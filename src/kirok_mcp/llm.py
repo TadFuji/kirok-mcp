@@ -88,7 +88,7 @@ Text:
 
 Respond with ONLY valid JSON, no markdown formatting, no explanation."""
 
-        response = self.client.models.generate_content(
+        response = await self.client.aio.models.generate_content(
             model=LLM_MODEL,
             contents=prompt,
         )
@@ -147,7 +147,7 @@ Return a JSON object with exactly these keys:
 
 Respond with ONLY valid JSON, no markdown formatting, no explanation."""
 
-        response = self.client.models.generate_content(
+        response = await self.client.aio.models.generate_content(
             model=LLM_MODEL,
             contents=prompt,
         )
@@ -239,7 +239,7 @@ If no observations should be created, updated, or deleted, return an empty array
 Respond with ONLY valid JSON, no markdown formatting, no explanation."""
 
         try:
-            response = self.client.models.generate_content(
+            response = await self.client.aio.models.generate_content(
                 model=LLM_MODEL,
                 contents=prompt,
             )
@@ -284,15 +284,24 @@ Respond with ONLY valid JSON, no markdown formatting, no explanation."""
     # ── Importance Evaluation ─────────────────────────────────────────
 
     async def evaluate_importance(
-        self, content: str, mission: str = ""
+        self, content: str, mission: str = "", threshold: int = 5
     ) -> dict:
         """Evaluate whether content is worth retaining.
+
+        Args:
+            content: The content to score.
+            mission: Optional retain mission to focus the evaluation.
+            threshold: Minimum score (1-10) required to retain. The
+                ``should_retain`` flag is computed against THIS value, so a
+                caller asking for ``threshold=3`` can retain a score-3 memory.
+                (Previously a hardcoded floor of 5 silently overrode lower
+                thresholds, dropping low-but-wanted items.)
 
         Returns:
             dict with keys:
               - score (int 1-10): importance score
               - reason (str): brief explanation
-              - should_retain (bool): True if score >= 5
+              - should_retain (bool): True if score >= threshold
         """
         mission_block = ""
         if mission:
@@ -322,7 +331,7 @@ Return a JSON object with:
 Respond with ONLY valid JSON, no markdown formatting, no explanation."""
 
         try:
-            response = self.client.models.generate_content(
+            response = await self.client.aio.models.generate_content(
                 model=LLM_MODEL,
                 contents=prompt,
             )
@@ -333,13 +342,19 @@ Respond with ONLY valid JSON, no markdown formatting, no explanation."""
                 return {
                     "score": score,
                     "reason": result.get("reason", ""),
-                    "should_retain": score >= 5,
+                    "should_retain": score >= threshold,
                 }
         except Exception as e:
             logger.error("Importance evaluation failed: %s", e)
 
-        # Default: retain (fail-open to avoid losing information)
-        return {"score": 5, "reason": "Evaluation failed, defaulting to retain", "should_retain": True}
+        # Default: retain (fail-open to avoid losing information). Report the
+        # threshold as the score so the result stays internally consistent
+        # (score >= threshold).
+        return {
+            "score": threshold,
+            "reason": "Evaluation failed, defaulting to retain",
+            "should_retain": True,
+        }
 
     # ── Smart Deduplication (inspired by Mem0) ────────────────────────
 
@@ -408,7 +423,7 @@ Return a JSON object with:
 Respond with ONLY valid JSON, no markdown formatting, no explanation."""
 
         try:
-            response = self.client.models.generate_content(
+            response = await self.client.aio.models.generate_content(
                 model=LLM_MODEL,
                 contents=prompt,
             )

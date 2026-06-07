@@ -24,7 +24,7 @@ Store new information in agent memory.
 3. If duplicate found: ADD / UPDATE / NOOP decision via LLM
 4. Extracts entities and keywords
 5. Stores in SQLite + FTS5 index
-6. Triggers auto-consolidation
+6. Triggers auto-consolidation (debounced — runs only once `KIROK_CONSOLIDATION_BATCH_SIZE` memories are pending; see `KIROK_consolidate`)
 
 **Example:**
 ```
@@ -49,12 +49,14 @@ Search and retrieve relevant memories.
 | `limit` | int | ❌ | `10` | Max results (1-50) |
 | `time_min` | string | ❌ | `""` | ISO 8601 lower bound |
 | `time_max` | string | ❌ | `""` | ISO 8601 upper bound |
+| `verbose` | bool | ❌ | `false` | Include RRF/Sim relevance scores per item |
 
 **Behavior:**
 1. Runs semantic search (cosine similarity)
 2. Runs keyword search (FTS5 BM25)
 3. Merges via Reciprocal Rank Fusion (k=60)
 4. Shows observations first, then memories
+5. Output is compact by default (content + ID); set `verbose=true` to also show relevance scores
 
 **Example:**
 ```
@@ -112,7 +114,7 @@ Evaluate importance before storing.
 
 **Behavior:**
 - LLM scores content 1-10
-- Only proceeds if score >= threshold
+- Only proceeds if score >= threshold (any threshold 1-10 is honored — there is no hidden floor)
 - Passing content uses the same retain pipeline as `KIROK_retain`
 - Deduplication, memory updates, NOOP decisions, and auto-consolidation apply
 - Ideal for bulk/automatic ingestion
@@ -121,7 +123,9 @@ Evaluate importance before storing.
 
 ### `KIROK_consolidate`
 
-Manually trigger observation consolidation.
+Manually trigger observation consolidation. Because auto-consolidation is
+debounced (it runs only once `KIROK_CONSOLIDATION_BATCH_SIZE` memories are
+pending), use this to force consolidation of any leftover memories immediately.
 
 **Parameters:**
 | Name | Type | Required | Default | Description |
@@ -129,7 +133,7 @@ Manually trigger observation consolidation.
 | `bank_id` | string | ✅ | — | Memory bank to consolidate |
 
 **Behavior:**
-- Finds unconsolidated memories
+- Finds unconsolidated memories (runs regardless of the debounce threshold)
 - Creates/updates/deletes observations
 - Auto-refreshes mental models with `auto_refresh=True`
 
