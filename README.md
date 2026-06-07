@@ -612,6 +612,54 @@ Alternatively, download Kirok as a ZIP from [GitHub](https://github.com/TadFuji/
 
 </details>
 
+<details>
+<summary><b>"Connection closed" / server crashes on launch (especially on Windows + cloud-synced folders)</b></summary>
+
+If the MCP client reports `Connection closed` or `Failed to connect` and the server
+dies before starting, the cause is often the `uv run` launch command itself, **not**
+your code or API key. Verify the environment is healthy first:
+
+```bash
+# Run with the venv's Python directly so a stuck `uv run` can't get in the way
+python -m kirok_mcp.diagnostics --json
+```
+
+If every check passes, the problem is the launcher. `uv run` re-syncs the project on
+every launch, which on Windows can fail because:
+
+- the running entry-point `.exe` cannot be regenerated while it is in use (`os error 32`), or
+- a cloud-sync service (OneDrive, iCloud Drive, Google Drive) locks files inside `.venv`,
+  so the sync aborts (`os error 5`) and can even break the editable install.
+
+**Fix: launch the venv's Python directly instead of `uv run`.** This skips sync and
+entry-point regeneration entirely, and does not depend on the editable install:
+
+```json
+{
+  "mcpServers": {
+    "kirok": {
+      "command": "C:\\path\\to\\kirok-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "kirok_mcp.server"],
+      "env": { "PYTHONPATH": "C:\\path\\to\\kirok-mcp\\src" }
+    }
+  }
+}
+```
+
+On Mac/Linux use forward slashes and `.venv/bin/python`. `GEMINI_API_KEY` is still read
+from `.env`, so you do not need to put it in the config. For the Claude Code CLI:
+
+```bash
+claude mcp remove kirok -s user
+claude mcp add kirok -s user -e "PYTHONPATH=/path/to/kirok-mcp/src" \
+  -- /path/to/kirok-mcp/.venv/bin/python -m kirok_mcp.server
+```
+
+After changing the config, reconnect from the `/mcp` menu — a full client restart is
+usually not required.
+
+</details>
+
 ---
 
 ## 📂 Project Structure
