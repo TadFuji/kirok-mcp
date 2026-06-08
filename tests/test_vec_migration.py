@@ -62,6 +62,46 @@ def test_migration_populates_vec_from_memories():
             db2.close()
 
 
+def test_observation_migration_populates_and_reconciles_vec():
+    """vec_observations is backfilled from observations and orphans are reconciled."""
+    dim = EMBEDDING_DIM
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "obs.db"
+        db = MemoryDB(db_path=path)
+        db.connect()
+        try:
+            if not db._vec_available:
+                pytest.skip("sqlite-vec not loaded")
+            mid = db.insert_memory(bank_id="b1", content="m", embedding=_make_vec(dim, 0.1))
+            oid = db.insert_observation("b1", "o", [mid], embedding=_make_vec(dim, 0.2))
+            # Inject an orphan vec_observations row (simulates a delete made while
+            # the extension was unavailable).
+            db.conn.execute(
+                "INSERT INTO vec_observations (observation_id, bank_id, embedding) "
+                "VALUES (?, ?, ?)",
+                ("orphan-obs", "b1", _serialize_vector(_make_vec(dim, 0.3))),
+            )
+            db.conn.commit()
+            assert db.conn.execute(
+                "SELECT COUNT(*) FROM vec_observations"
+            ).fetchone()[0] == 2
+        finally:
+            db.close()
+
+        db2 = MemoryDB(db_path=path)
+        db2.connect()
+        try:
+            if not db2._vec_available:
+                pytest.skip("sqlite-vec not loaded")
+            ids = {
+                r["observation_id"]
+                for r in db2.conn.execute("SELECT observation_id FROM vec_observations")
+            }
+            assert ids == {oid}  # orphan reconciled away, real observation kept
+        finally:
+            db2.close()
+
+
 def test_migration_reconciles_orphan_vec_rows():
     """Reconnect repairs vec rows whose source memory no longer exists.
 

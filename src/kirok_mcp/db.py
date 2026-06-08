@@ -42,6 +42,22 @@ def _deserialize_vector(blob: bytes) -> list[float]:
 _FTS5_OPERATORS = re.compile(r'\b(AND|OR|NOT|NEAR)\b', re.IGNORECASE)
 
 
+def _join_json_list(raw: str) -> str:
+    """Space-join a JSON array string for FTS indexing, tolerating bad JSON.
+
+    Mirrors how ``insert_memory`` feeds entities/keywords into the FTS index.
+    A row whose JSON is malformed (legacy or hand-edited data) falls back to
+    empty text so a single bad row cannot abort an index rebuild.
+    """
+    try:
+        parsed = json.loads(raw) if raw else []
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if isinstance(parsed, list):
+        return " ".join(str(x) for x in parsed)
+    return ""
+
+
 def _sanitize_fts_query(query: str) -> str | None:
     """Sanitize a query string for safe use with FTS5 MATCH.
 
@@ -65,8 +81,11 @@ def _sanitize_fts_query(query: str) -> str | None:
     # Remove FTS5 operators
     cleaned = _FTS5_OPERATORS.sub(' ', cleaned)
 
-    # Split into tokens and wrap each in double quotes
-    tokens = cleaned.split()
+    # Split into tokens. The trigram tokenizer indexes 3-character windows, so
+    # tokens shorter than 3 chars can never match — drop them and let semantic
+    # search cover those (e.g. 2-char Japanese words). If nothing remains, return
+    # None so recall falls back to the semantic path (existing behavior).
+    tokens = [t for t in cleaned.split() if len(t) >= 3]
     if not tokens:
         return None
 
@@ -215,10 +234,12 @@ class MemoryDB:
         for ddl in [
             """CREATE VIRTUAL TABLE fts_memories USING fts5(
                 id UNINDEXED, bank_id UNINDEXED,
-                content, entities, keywords, context
+                content, entities, keywords, context,
+                tokenize='trigram'
             )""",
             """CREATE VIRTUAL TABLE fts_observations USING fts5(
-                id UNINDEXED, bank_id UNINDEXED, content
+                id UNINDEXED, bank_id UNINDEXED, content,
+                tokenize='trigram'
             )""",
         ]:
             try:
@@ -237,10 +258,110 @@ class MemoryDB:
 
         self.conn.commit()
 
-        # Backfill the vec table from existing memories. Done after commit so the
-        # base schema is durable before the (potentially large) migration runs.
+        # Rebuild FTS indexes with the trigram tokenizer if they predate it (the
+        # CREATE above matches by name only, so an old unicode61 table survives).
+        # Runs post-commit in its own transaction, like the vec backfill — the
+        # FTS index is rebuildable from the source tables, so redoing it is safe.
+        self._migrate_fts_schema()
+
+        # Backfill the vec tables from existing memories/observations. Done after
+        # commit so the base schema is durable before the (potentially large)
+        # migration runs.
         if self._vec_available:
             self._migrate_vectors_to_vec_table()
+            self._migrate_observation_vectors()
+
+    def _fts_is_trigram(self, fts_name: str) -> bool:
+        """Return True if the stored FTS table is declared with the trigram tokenizer."""
+        assert self.conn is not None
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (fts_name,),
+        ).fetchone()
+        return row is not None and "trigram" in row["sql"].lower()
+
+    def _migrate_fts_schema(self) -> None:
+        """Rebuild FTS tables with the trigram tokenizer if they predate it.
+
+        The default ``unicode61`` tokenizer splits CJK into single-character
+        tokens, so BM25 barely works for Japanese. ``trigram`` indexes 3-char
+        windows and restores Japanese substring matching. ``CREATE VIRTUAL TABLE``
+        matches by name only, so an existing unicode61 table is kept silently;
+        we detect the tokenizer from the stored SQL and rebuild if needed.
+
+        Each table's DROP → CREATE → backfill runs in a single transaction, so a
+        backfill error rolls the DROP back and leaves the old index intact.
+        Idempotent: a no-op once both FTS tables are trigram.
+        """
+        assert self.conn is not None
+
+        # An explicit BEGIN wraps the DROP + CREATE + backfill in one transaction.
+        # Without it, Python's sqlite3 auto-commits DDL (DROP/CREATE), so a
+        # backfill failure would leave an empty trigram table that the tokenizer
+        # check then treats as "already migrated" — silently breaking search. With
+        # the explicit transaction, a failure rolls back to the old index and the
+        # next connect retries.
+
+        # fts_memories: entities/keywords are stored as JSON arrays but indexed as
+        # space-joined text (matching insert_memory), so backfill row-by-row in
+        # Python. Malformed JSON on any one row falls back to empty text rather
+        # than aborting the whole rebuild.
+        if not self._fts_is_trigram("fts_memories"):
+            logger.warning("Rebuilding fts_memories with the trigram tokenizer")
+            rows = self.conn.execute(
+                "SELECT id, bank_id, content, entities, keywords, context "
+                "FROM memories"
+            ).fetchall()
+            try:
+                self.conn.execute("BEGIN")
+                self.conn.execute("DROP TABLE IF EXISTS fts_memories")
+                self.conn.execute(
+                    "CREATE VIRTUAL TABLE fts_memories USING fts5("
+                    "id UNINDEXED, bank_id UNINDEXED, "
+                    "content, entities, keywords, context, "
+                    "tokenize='trigram')"
+                )
+                self.conn.executemany(
+                    "INSERT INTO fts_memories "
+                    "(id, bank_id, content, entities, keywords, context) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            r["id"],
+                            r["bank_id"],
+                            r["content"],
+                            _join_json_list(r["entities"]),
+                            _join_json_list(r["keywords"]),
+                            r["context"],
+                        )
+                        for r in rows
+                    ],
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+        # fts_observations: a single content column, so a plain INSERT...SELECT
+        # reproduces the index exactly.
+        if not self._fts_is_trigram("fts_observations"):
+            logger.warning("Rebuilding fts_observations with the trigram tokenizer")
+            try:
+                self.conn.execute("BEGIN")
+                self.conn.execute("DROP TABLE IF EXISTS fts_observations")
+                self.conn.execute(
+                    "CREATE VIRTUAL TABLE fts_observations USING fts5("
+                    "id UNINDEXED, bank_id UNINDEXED, content, "
+                    "tokenize='trigram')"
+                )
+                self.conn.execute(
+                    "INSERT INTO fts_observations (id, bank_id, content) "
+                    "SELECT id, bank_id, content FROM observations"
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def _init_vec_schema(self) -> None:
         """Create (or repair) the vec_memories virtual table.
@@ -278,6 +399,33 @@ class MemoryDB:
             f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(
                 memory_id TEXT PRIMARY KEY,
+                bank_id TEXT partition key,
+                embedding float[{EMBEDDING_DIM}] distance_metric=cosine
+            )
+            """
+        )
+
+        # vec_observations mirrors vec_memories exactly (same width / partition /
+        # metric), so the same stale-table detection and DROP applies.
+        existing_obs = self.conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='vec_observations'"
+        ).fetchone()
+        if existing_obs is not None:
+            sql = existing_obs["sql"]
+            wrong_width = f"float[{EMBEDDING_DIM}]" not in sql
+            missing_partition = "partition key" not in sql.lower()
+            if wrong_width or missing_partition:
+                reason = "width != %s" % EMBEDDING_DIM if wrong_width else "no bank_id partition key"
+                logger.warning(
+                    "Dropping stale vec_observations (%s) before recreate", reason
+                )
+                self.conn.execute("DROP TABLE vec_observations")
+
+        self.conn.execute(
+            f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS vec_observations USING vec0(
+                observation_id TEXT PRIMARY KEY,
                 bank_id TEXT partition key,
                 embedding float[{EMBEDDING_DIM}] distance_metric=cosine
             )
@@ -349,6 +497,61 @@ class MemoryDB:
                 )
                 done += len(chunk)
                 logger.info("Migrating vectors: %s/%s", done, total)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def _migrate_observation_vectors(self) -> None:
+        """Reconcile vec_observations with observations.embedding.
+
+        Symmetric to ``_migrate_vectors_to_vec_table``: rebuilds whenever the
+        observation_id set differs from the set of observations carrying a
+        correctly-sized embedding, healing both missing and orphan rows. The
+        steady-state check fetches only ids, so it stays cheap.
+        """
+        assert self.conn is not None
+        if not self._vec_available:
+            return
+
+        expected_bytes = EMBEDDING_DIM * 4  # float32 = 4 bytes each
+        obs_ids = {
+            r["id"]
+            for r in self.conn.execute(
+                "SELECT id FROM observations "
+                "WHERE embedding IS NOT NULL AND length(embedding) = ?",
+                (expected_bytes,),
+            )
+        }
+        vec_ids = {
+            r["observation_id"]
+            for r in self.conn.execute("SELECT observation_id FROM vec_observations")
+        }
+        if obs_ids == vec_ids:
+            return
+
+        logger.info(
+            "Reconciling vec_observations (%s observations, %s vec rows)",
+            len(obs_ids),
+            len(vec_ids),
+        )
+
+        rows = self.conn.execute(
+            "SELECT id, bank_id, embedding FROM observations "
+            "WHERE embedding IS NOT NULL AND length(embedding) = ?",
+            (expected_bytes,),
+        ).fetchall()
+
+        try:
+            self.conn.execute("DELETE FROM vec_observations")
+            batch_size = 500
+            for start in range(0, len(rows), batch_size):
+                chunk = rows[start:start + batch_size]
+                self.conn.executemany(
+                    "INSERT INTO vec_observations "
+                    "(observation_id, bank_id, embedding) VALUES (?, ?, ?)",
+                    [(r["id"], r["bank_id"], r["embedding"]) for r in chunk],
+                )
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -490,6 +693,52 @@ class MemoryDB:
                FROM memories
                WHERE bank_id = ? AND embedding IS NOT NULL""",
             (bank_id,),
+        ).fetchall()
+
+        results = []
+        for r in rows:
+            results.append({
+                "id": r["id"],
+                "content": r["content"],
+                "embedding": _deserialize_vector(r["embedding"]),
+                "timestamp": r["timestamp"],
+                "context": r["context"],
+                "entities": json.loads(r["entities"]),
+                "keywords": json.loads(r["keywords"]),
+            })
+        return results
+
+    def get_embeddings_in_range(
+        self,
+        bank_id: str,
+        time_min: str | None = None,
+        time_max: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Load embeddings for a bank, optionally restricted to a timestamp range.
+
+        Same row shape as ``get_all_embeddings``, but pushes the time-window
+        filter into SQL so time-filtered recall (which must stay on brute force
+        because vec0 cannot filter by timestamp) loads only the candidates it
+        needs instead of the whole bank. Bounds are inclusive (>= / <=), matching
+        the previous in-Python filter and ``search_by_timestamp``.
+        """
+        assert self.conn is not None
+
+        conditions = ["bank_id = ?", "embedding IS NOT NULL"]
+        params: list[Any] = [bank_id]
+        if time_min:
+            conditions.append("timestamp >= ?")
+            params.append(time_min)
+        if time_max:
+            conditions.append("timestamp <= ?")
+            params.append(time_max)
+        where = " AND ".join(conditions)
+
+        rows = self.conn.execute(
+            f"""SELECT id, content, embedding, timestamp, context, entities, keywords
+               FROM memories
+               WHERE {where}""",
+            params,
         ).fetchall()
 
         results = []
@@ -727,10 +976,18 @@ class MemoryDB:
             "SELECT COUNT(*) FROM mental_models WHERE bank_id = ?", (bank_id,)
         ).fetchone()[0]
 
+        obs_count = self.conn.execute(
+            "SELECT COUNT(*) FROM observations WHERE bank_id = ?", (bank_id,)
+        ).fetchone()[0]
+
         return {
             "bank_id": bank_id,
             "memory_count": mem_count,
             "mental_model_count": model_count,
+            # COUNT(*) instead of len(get_*(limit=1000)): accurate past 1000 rows
+            # and avoids hydrating rows just to count them.
+            "observations_count": obs_count,
+            "unconsolidated_count": self.count_unconsolidated_memories(bank_id),
         }
 
     # ── Forget ────────────────────────────────────────────────────────
@@ -888,6 +1145,56 @@ class MemoryDB:
 
         return True
 
+    def update_memory_embedding(
+        self, memory_id: str, embedding: list[float]
+    ) -> bool:
+        """Replace a memory's embedding (and its vec row) without touching content.
+
+        Used by the re-embedding script: the content/entities/keywords are
+        unchanged, only the vector is regenerated. A plain UPDATE of the BLOB
+        would leave the vec table holding the stale vector (``_migrate`` only
+        rebuilds on an id-set mismatch, not a value change), so the vec row is
+        re-synced here via delete-then-insert. Returns False if the id is unknown.
+
+        Raises ValueError on a wrong-size vector — this is for re-embedding
+        production data at full fidelity, so a mis-sized vector is a bug we refuse
+        to persist (it would silently corrupt the stored embedding width).
+        """
+        assert self.conn is not None
+        if len(embedding) != EMBEDDING_DIM:
+            raise ValueError(
+                f"update_memory_embedding expects a {EMBEDDING_DIM}-d vector, "
+                f"got {len(embedding)}"
+            )
+
+        row = self.conn.execute(
+            "SELECT bank_id FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        if not row:
+            return False
+
+        emb_blob = _serialize_vector(embedding)
+        try:
+            self.conn.execute(
+                "UPDATE memories SET embedding = ? WHERE id = ?",
+                (emb_blob, memory_id),
+            )
+            if self._vec_available:
+                self.conn.execute(
+                    "DELETE FROM vec_memories WHERE memory_id = ?", (memory_id,)
+                )
+                self.conn.execute(
+                    "INSERT INTO vec_memories (memory_id, bank_id, embedding) "
+                    "VALUES (?, ?, ?)",
+                    (memory_id, row["bank_id"], emb_blob),
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+        return True
+
     # ── Time-Range Search ─────────────────────────────────────────────
 
     def search_by_timestamp(
@@ -996,6 +1303,9 @@ class MemoryDB:
             if self._vec_available:
                 self.conn.execute(
                     "DELETE FROM vec_memories WHERE bank_id = ?", (bank_id,)
+                )
+                self.conn.execute(
+                    "DELETE FROM vec_observations WHERE bank_id = ?", (bank_id,)
                 )
             self.conn.execute("DELETE FROM memories WHERE bank_id = ?", (bank_id,))
             self.conn.execute(
@@ -1256,6 +1566,22 @@ class MemoryDB:
                    VALUES (?, ?, ?)""",
                 (obs_id, bank_id, content),
             )
+
+            # Keep the vec index in sync (fresh id, no conflict). Only well-formed
+            # EMBEDDING_DIM vectors belong in the float[EMBEDDING_DIM] table;
+            # off-size vectors (e.g. test fixtures) stay on the brute-force path.
+            if (
+                self._vec_available
+                and emb_blob is not None
+                and embedding is not None
+                and len(embedding) == EMBEDDING_DIM
+            ):
+                self.conn.execute(
+                    "INSERT INTO vec_observations "
+                    "(observation_id, bank_id, embedding) VALUES (?, ?, ?)",
+                    (obs_id, bank_id, emb_blob),
+                )
+
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -1301,6 +1627,22 @@ class MemoryDB:
                    VALUES (?, ?, ?)""",
                 (observation_id, row["bank_id"], content),
             )
+
+            # Keep the vec index in sync. vec0 has no INSERT OR REPLACE on a TEXT
+            # primary key, so delete-then-insert. If the embedding became NULL we
+            # just remove the stale vec row.
+            if self._vec_available:
+                self.conn.execute(
+                    "DELETE FROM vec_observations WHERE observation_id = ?",
+                    (observation_id,),
+                )
+                if emb_blob is not None and len(emb_blob) == EMBEDDING_DIM * 4:
+                    self.conn.execute(
+                        "INSERT INTO vec_observations "
+                        "(observation_id, bank_id, embedding) VALUES (?, ?, ?)",
+                        (observation_id, row["bank_id"], emb_blob),
+                    )
+
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -1325,6 +1667,60 @@ class MemoryDB:
             self.conn.execute(
                 "DELETE FROM observations WHERE id = ?", (observation_id,)
             )
+            if self._vec_available:
+                self.conn.execute(
+                    "DELETE FROM vec_observations WHERE observation_id = ?",
+                    (observation_id,),
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+        return True
+
+    def update_observation_embedding(
+        self, observation_id: str, embedding: list[float]
+    ) -> bool:
+        """Replace an observation's embedding (and its vec row) only.
+
+        The content / source_memory_ids are required positional args on
+        ``update_observation`` (and ``content`` is NOT NULL), so re-embedding via
+        that method risks clobbering the row. This narrow method updates just the
+        vector and re-syncs vec_observations. Returns False if the id is unknown.
+
+        Raises ValueError on a wrong-size vector — same rationale as
+        update_memory_embedding (refuse to persist a mis-sized embedding).
+        """
+        assert self.conn is not None
+        if len(embedding) != EMBEDDING_DIM:
+            raise ValueError(
+                f"update_observation_embedding expects a {EMBEDDING_DIM}-d vector, "
+                f"got {len(embedding)}"
+            )
+
+        row = self.conn.execute(
+            "SELECT bank_id FROM observations WHERE id = ?", (observation_id,)
+        ).fetchone()
+        if not row:
+            return False
+
+        emb_blob = _serialize_vector(embedding)
+        try:
+            self.conn.execute(
+                "UPDATE observations SET embedding = ? WHERE id = ?",
+                (emb_blob, observation_id),
+            )
+            if self._vec_available:
+                self.conn.execute(
+                    "DELETE FROM vec_observations WHERE observation_id = ?",
+                    (observation_id,),
+                )
+                self.conn.execute(
+                    "INSERT INTO vec_observations "
+                    "(observation_id, bank_id, embedding) VALUES (?, ?, ?)",
+                    (observation_id, row["bank_id"], emb_blob),
+                )
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -1381,6 +1777,85 @@ class MemoryDB:
             }
             for r in rows
         ]
+
+    def _brute_force_search_observations(
+        self, query_embedding: list[float], bank_id: str, top_k: int
+    ) -> list[dict[str, Any]]:
+        """Brute-force cosine search over a bank's observation embeddings."""
+        candidates = self.get_observation_embeddings(bank_id)
+        return semantic_search(query_embedding, candidates, top_k=top_k)
+
+    def vec_search_observations(
+        self, query_embedding: list[float], bank_id: str, top_k: int
+    ) -> list[dict[str, Any]]:
+        """Per-bank KNN search over observations via sqlite-vec.
+
+        Mirrors ``vec_search`` for the observation layer. Result dicts match the
+        ``get_observation_embeddings`` + ``semantic_search`` shape
+        (id/content/timestamp/source_memory_ids/similarity) so recall display is
+        unchanged. Falls back to brute force when the extension is unavailable,
+        the KNN errors, or it under-returns relative to the bank's vec-eligible
+        observation count.
+        """
+        assert self.conn is not None
+
+        if not self._vec_available:
+            return self._brute_force_search_observations(query_embedding, bank_id, top_k)
+
+        try:
+            query_blob = _serialize_vector(query_embedding)
+            knn_rows = self.conn.execute(
+                """SELECT observation_id, distance
+                   FROM vec_observations
+                   WHERE bank_id = ? AND embedding MATCH ?
+                   ORDER BY distance
+                   LIMIT ?""",
+                (bank_id, query_blob, max(top_k, 1)),
+            ).fetchall()
+        except Exception as e:
+            logger.warning(
+                "vec_search_observations failed, falling back to brute-force: %s", e
+            )
+            return self._brute_force_search_observations(query_embedding, bank_id, top_k)
+
+        if len(knn_rows) < top_k:
+            bank_count = self.conn.execute(
+                "SELECT COUNT(*) FROM observations "
+                "WHERE bank_id = ? AND embedding IS NOT NULL "
+                "AND length(embedding) = ?",
+                (bank_id, EMBEDDING_DIM * 4),
+            ).fetchone()[0]
+            if len(knn_rows) < min(top_k, bank_count):
+                return self._brute_force_search_observations(
+                    query_embedding, bank_id, top_k
+                )
+
+        if not knn_rows:
+            return []
+
+        distances = {r["observation_id"]: r["distance"] for r in knn_rows}
+        ids = list(distances.keys())
+        placeholders = ",".join("?" for _ in ids)
+        obs_rows = self.conn.execute(
+            f"""SELECT id, content, updated_at, source_memory_ids
+                FROM observations
+                WHERE id IN ({placeholders})""",
+            ids,
+        ).fetchall()
+
+        results = []
+        for r in obs_rows:
+            similarity = max(0.0, 1.0 - float(distances[r["id"]]))
+            results.append({
+                "id": r["id"],
+                "content": r["content"],
+                "timestamp": r["updated_at"],
+                "source_memory_ids": json.loads(r["source_memory_ids"]),
+                "similarity": similarity,
+            })
+
+        results.sort(key=lambda x: x["similarity"], reverse=True)
+        return results[:top_k]
 
     def get_unconsolidated_memories(
         self, bank_id: str, limit: int = 50
@@ -1452,6 +1927,10 @@ class MemoryDB:
                 "(SELECT id FROM observations WHERE bank_id = ?)",
                 (bank_id,),
             )
+            if self._vec_available:
+                self.conn.execute(
+                    "DELETE FROM vec_observations WHERE bank_id = ?", (bank_id,)
+                )
             self.conn.execute(
                 "DELETE FROM observations WHERE bank_id = ?", (bank_id,)
             )

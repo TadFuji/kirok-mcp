@@ -52,9 +52,11 @@ class MemoryDBTest(unittest.TestCase):
         self.assertEqual(self.db.fts_search("project", "Buildkite"), [])
 
     def test_fts_query_sanitization_handles_special_syntax(self) -> None:
+        # Tokens shorter than 3 chars are dropped for the trigram tokenizer
+        # ('03', '25', 'x', 'y' here), leaving only the >=3-char tokens.
         sanitized = _sanitize_fts_query('2026-03-25 ASCII AND NEAR("x" "y") * ^')
 
-        self.assertEqual(sanitized, '"2026" "03" "25" "ASCII" "x" "y"')
+        self.assertEqual(sanitized, '"2026" "ASCII"')
         self.assertIsNone(_sanitize_fts_query(" AND - * ^ "))
 
     def test_clear_bank_removes_memories_and_observations_only(self) -> None:
@@ -145,6 +147,77 @@ class MemoryDBTest(unittest.TestCase):
         # A different bank does not affect the count.
         self.db.insert_memory("bank-d", "other", embedding=[1.0, 0.0])
         self.assertEqual(self.db.count_unconsolidated_memories("bank-c"), 1)
+
+    def test_get_embeddings_in_range_filters_by_timestamp(self) -> None:
+        a = self.db.insert_memory(
+            "bank-t", "early", embedding=[1.0, 0.0],
+            timestamp="2026-01-01T00:00:00+00:00",
+        )
+        b = self.db.insert_memory(
+            "bank-t", "mid", embedding=[1.0, 0.0],
+            timestamp="2026-06-01T00:00:00+00:00",
+        )
+        c = self.db.insert_memory(
+            "bank-t", "late", embedding=[1.0, 0.0],
+            timestamp="2026-12-01T00:00:00+00:00",
+        )
+
+        def ids(rows):
+            return {r["id"] for r in rows}
+
+        # time_min only — inclusive of the boundary.
+        self.assertEqual(
+            ids(self.db.get_embeddings_in_range("bank-t", time_min="2026-06-01T00:00:00+00:00")),
+            {b, c},
+        )
+        # time_max only — inclusive of the boundary.
+        self.assertEqual(
+            ids(self.db.get_embeddings_in_range("bank-t", time_max="2026-06-01T00:00:00+00:00")),
+            {a, b},
+        )
+        # Both bounds.
+        self.assertEqual(
+            ids(self.db.get_embeddings_in_range(
+                "bank-t",
+                time_min="2026-02-01T00:00:00+00:00",
+                time_max="2026-07-01T00:00:00+00:00",
+            )),
+            {b},
+        )
+        # Both bounds on the same boundary value → that single row (both ends inclusive).
+        self.assertEqual(
+            ids(self.db.get_embeddings_in_range(
+                "bank-t",
+                time_min="2026-06-01T00:00:00+00:00",
+                time_max="2026-06-01T00:00:00+00:00",
+            )),
+            {b},
+        )
+        # Out of range → empty.
+        self.assertEqual(
+            ids(self.db.get_embeddings_in_range("bank-t", time_min="2027-01-01T00:00:00+00:00")),
+            set(),
+        )
+        # No bounds → same id set as get_all_embeddings (backward-compat anchor).
+        self.assertEqual(
+            ids(self.db.get_embeddings_in_range("bank-t")),
+            ids(self.db.get_all_embeddings("bank-t")),
+        )
+
+    def test_get_stats_counts_are_count_based(self) -> None:
+        m1 = self.db.insert_memory("bank-s", "one", embedding=[1.0, 0.0])
+        self.db.insert_memory("bank-s", "two", embedding=[1.0, 0.0])
+        self.db.insert_observation("bank-s", "obs", [m1], embedding=[1.0, 0.0])
+        self.db.insert_mental_model("bank-s", "topic", "insight", [m1])
+        self.db.mark_memories_consolidated([m1])
+
+        stats = self.db.get_stats("bank-s")
+
+        self.assertEqual(stats["memory_count"], 2)
+        self.assertEqual(stats["observations_count"], 1)
+        self.assertEqual(stats["mental_model_count"], 1)
+        # Only the unconsolidated memory (m2) is pending after m1 is consolidated.
+        self.assertEqual(stats["unconsolidated_count"], 1)
 
     def test_mental_model_options_are_persisted(self) -> None:
         model_id = self.db.insert_mental_model_with_options(

@@ -461,8 +461,9 @@ uv run kirok-doctor
 ```
 
 It checks Python version, `.env` loading, `GEMINI_API_KEY` presence (without
-printing the key), required Python modules, SQLite FTS5 support, and database
-directory writability. It does **not** call Gemini or any network API.
+printing the key), required Python modules, SQLite FTS5 support, the sqlite-vec
+extension (the KNN backend), and database directory writability. It does **not**
+call Gemini or any network API.
 
 JSON output is available for automation:
 

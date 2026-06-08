@@ -89,7 +89,7 @@ class _FakeReflectLLM:
 
 
 class _FakeEmbedder:
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, task_type: str = "") -> list[float]:
         return [1.0, 0.0]
 
 
@@ -258,20 +258,26 @@ class _FakeRecallDB:
     def fts_search(self, bank_id: str, query: str, limit: int = 20) -> list[dict]:
         return [{"id": "mem-1", "content": "User prefers dark mode.", "score": -1.2}]
 
-    def get_observation_embeddings(self, bank_id: str) -> list[dict]:
+    def vec_search_observations(
+        self, query_embedding: list, bank_id: str, top_k: int
+    ) -> list[dict]:
         return [
             {
                 "id": "obs-1",
                 "content": "User consistently prefers a dark UI.",
-                "embedding": [1.0, 0.0],
                 "timestamp": "2026-05-04T00:00:00+00:00",
                 "source_memory_ids": ["mem-1"],
+                "similarity": 0.88,
             }
-        ]
+        ][:top_k]
 
 
 class _FakeRecallEmbedder:
-    async def embed(self, text: str) -> list[float]:
+    def __init__(self):
+        self.last_task_type = None
+
+    async def embed(self, text: str, task_type: str = "") -> list[float]:
+        self.last_task_type = task_type
         return [1.0, 0.0]
 
 
@@ -305,6 +311,150 @@ class RecallOutputTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("RRF:", result)
         self.assertIn("Sim:", result)
         self.assertIn("mem-1", result)
+
+    async def test_recall_embeds_query_with_query_task_type(self) -> None:
+        from kirok_mcp.embeddings import TASK_TYPE_QUERY
+
+        await server.KIROK_recall(bank_id="user-prefs", query="dark mode")
+        self.assertEqual(server._embedder.last_task_type, TASK_TYPE_QUERY)
+
+
+class _FakeStatsDB:
+    def get_stats(self, bank_id: str) -> dict:
+        return {
+            "bank_id": bank_id,
+            "memory_count": 42,
+            "mental_model_count": 3,
+            "observations_count": 7,
+            "unconsolidated_count": 2,
+        }
+
+    def get_bank_config(self, bank_id: str) -> dict:
+        return {
+            "bank_id": bank_id,
+            "retain_mission": "mission",
+            "observations_mission": "",
+        }
+
+
+class StatsTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.original_db = server._db
+        server._db = _FakeStatsDB()
+
+    def tearDown(self) -> None:
+        server._db = self.original_db
+
+    async def test_stats_uses_count_based_fields(self) -> None:
+        # _FakeStatsDB deliberately omits get_observations /
+        # get_unconsolidated_memories: KIROK_stats must rely solely on the
+        # COUNT-based get_stats fields.
+        result = await server.KIROK_stats(bank_id="user-prefs")
+
+        self.assertIn("Memories: 42", result)
+        self.assertIn("Mental Models: 3", result)
+        self.assertIn("Observations: 7", result)
+        self.assertIn("Unconsolidated memories: 2", result)
+
+
+class _FakeUpdateDB:
+    def __init__(self, memory=None, update_result=True):
+        self._memory = memory
+        self._update_result = update_result
+        self.update_calls = []
+
+    def get_memory(self, memory_id: str):
+        return self._memory
+
+    def get_bank_config(self, bank_id: str) -> dict:
+        return {
+            "bank_id": bank_id,
+            "retain_mission": "MISSION-X",
+            "observations_mission": "",
+        }
+
+    def update_memory(self, **kwargs) -> bool:
+        self.update_calls.append(kwargs)
+        return self._update_result
+
+
+class _FakeUpdateLLM:
+    def __init__(self):
+        self.extract_calls = []
+
+    async def extract_entities(self, text: str, mission: str = "") -> dict:
+        self.extract_calls.append({"text": text, "mission": mission})
+        return {"entities": ["E"], "keywords": ["K"]}
+
+
+class _FakeUpdateEmbedder:
+    def __init__(self):
+        self.embed_calls = []
+
+    async def embed(self, text: str, task_type: str = "") -> list[float]:
+        self.embed_calls.append(text)
+        return [1.0, 0.0]
+
+
+class UpdateMemoryTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.o_db = server._db
+        self.o_llm = server._llm
+        self.o_emb = server._embedder
+
+    def tearDown(self) -> None:
+        server._db = self.o_db
+        server._llm = self.o_llm
+        server._embedder = self.o_emb
+
+    async def test_content_update_existing_passes_retain_mission(self) -> None:
+        db = _FakeUpdateDB(memory={"id": "m1", "bank_id": "bank-x"})
+        llm = _FakeUpdateLLM()
+        emb = _FakeUpdateEmbedder()
+        server._db, server._llm, server._embedder = db, llm, emb
+
+        result = await server.KIROK_update_memory(memory_id="m1", content="new text")
+
+        self.assertIn("updated successfully", result)
+        self.assertEqual(llm.extract_calls, [{"text": "new text", "mission": "MISSION-X"}])
+        self.assertEqual(emb.embed_calls, ["new text"])
+
+    async def test_content_update_missing_skips_llm_and_embed(self) -> None:
+        db = _FakeUpdateDB(memory=None)
+        llm = _FakeUpdateLLM()
+        emb = _FakeUpdateEmbedder()
+        server._db, server._llm, server._embedder = db, llm, emb
+
+        result = await server.KIROK_update_memory(memory_id="ghost", content="new text")
+
+        self.assertIn("not found", result)
+        self.assertEqual(llm.extract_calls, [])
+        self.assertEqual(emb.embed_calls, [])
+        self.assertEqual(db.update_calls, [])
+
+    async def test_context_only_update_existing(self) -> None:
+        db = _FakeUpdateDB(memory={"id": "m1", "bank_id": "bank-x"}, update_result=True)
+        llm = _FakeUpdateLLM()
+        emb = _FakeUpdateEmbedder()
+        server._db, server._llm, server._embedder = db, llm, emb
+
+        result = await server.KIROK_update_memory(memory_id="m1", context="ctx")
+
+        self.assertIn("updated successfully", result)
+        # The content-less path must not touch the LLM / embedder.
+        self.assertEqual(llm.extract_calls, [])
+        self.assertEqual(emb.embed_calls, [])
+        self.assertEqual(len(db.update_calls), 1)
+
+    async def test_context_only_update_missing_returns_not_found(self) -> None:
+        db = _FakeUpdateDB(memory=None, update_result=False)
+        server._db = db
+        server._llm = _FakeUpdateLLM()
+        server._embedder = _FakeUpdateEmbedder()
+
+        result = await server.KIROK_update_memory(memory_id="ghost", context="ctx")
+
+        self.assertIn("not found", result)
 
 
 if __name__ == "__main__":

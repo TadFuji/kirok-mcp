@@ -31,8 +31,11 @@ The main entry point. Built on [FastMCP](https://github.com/jlowin/fastmcp), it:
 SQLite-backed storage with FTS5 full-text search. Key design decisions:
 - **WAL mode** for concurrent read/write performance
 - **Binary BLOB storage** for embedding vectors (packed float32 arrays)
-- **FTS5 virtual tables** for keyword search with BM25 ranking
-- **Automatic schema migration** for forward compatibility
+- **FTS5 virtual tables** for keyword search with BM25 ranking, using the
+  `trigram` tokenizer so Japanese/CJK substring matching works (the default
+  tokenizer splits CJK into single characters, leaving BM25 ineffective)
+- **Automatic schema migration** for forward compatibility (including rebuilding
+  the FTS index with the trigram tokenizer for pre-existing databases)
 
 #### Schema
 
@@ -95,14 +98,23 @@ vec_memories USING vec0 (
     bank_id TEXT PARTITION KEY,
     embedding float[3072] distance_metric=cosine
 )
+
+-- Same design for the observation layer (created/reconciled the same way).
+vec_observations USING vec0 (
+    observation_id TEXT PRIMARY KEY,
+    bank_id TEXT PARTITION KEY,
+    embedding float[3072] distance_metric=cosine
+)
 ```
 
 ### 3. Embeddings (`embeddings.py`)
 
 Handles vector operations:
 - **Model**: `gemini-embedding-001` — 3072-dimensional output, 2048 max input tokens, 100+ languages
-- **Cosine similarity**: NumPy-based computation for ranking and the brute-force path
-- **Semantic search**: per-bank sqlite-vec `vec0` cosine KNN for memories (transparent brute-force fallback); brute-force cosine for observations
+- **Asymmetric task types**: stored content is embedded as `RETRIEVAL_DOCUMENT`, search queries as `RETRIEVAL_QUERY`, for better retrieval relevance. At 3072 the output is pre-normalized (no manual L2 step)
+- **Cosine similarity**: vectorized NumPy computation for ranking and the brute-force path
+- **Semantic search**: per-bank sqlite-vec `vec0` cosine KNN for both memories and observations (transparent brute-force fallback)
+- **Retries**: transient embedding/LLM failures (5xx, 429, network) retry with bounded exponential backoff
 - **Reciprocal Rank Fusion**: Merges semantic and keyword rankings
 
 #### Why sqlite-vec with a brute-force fallback?
@@ -114,10 +126,11 @@ of the results (a hazard of any global-KNN + post-filter approach).
 
 If the native `sqlite-vec` extension cannot load (for example, a Python build
 without extension support), search transparently falls back to exact brute-force
-cosine over the bank — same results, only slower. Brute-force is also used for
-the observation layer and for time-filtered recall (vec0 cannot filter by
-timestamp). For the typical hundreds-to-thousands of memories per bank both
-paths are fast; the vec index keeps recall cheap as banks grow.
+cosine over the bank — same results, only slower. The same vec/brute-force pair
+backs the observation layer. Time-filtered recall always uses brute-force (vec0
+cannot filter by timestamp) but pre-filters by timestamp in SQL so it only scores
+the rows in range. For the typical hundreds-to-thousands of memories per bank
+both paths are fast; the vec index keeps recall cheap as banks grow.
 
 ### 4. LLM Client (`llm.py`)
 

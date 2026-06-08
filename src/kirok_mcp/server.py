@@ -19,6 +19,8 @@ from mcp.server.fastmcp import FastMCP
 from kirok_mcp.db import MemoryDB
 from kirok_mcp.embeddings import (
     EmbeddingClient,
+    TASK_TYPE_DOCUMENT,
+    TASK_TYPE_QUERY,
     reciprocal_rank_fusion,
     semantic_search,
 )
@@ -110,7 +112,9 @@ async def _run_consolidation(bank_id: str) -> str:
             continue
 
         # Generate embedding for create/update
-        obs_embedding = await _embedder.embed(action["content"])
+        obs_embedding = await _embedder.embed(
+            action["content"], task_type=TASK_TYPE_DOCUMENT
+        )
 
         if action["action"] == "create":
             _db.insert_observation(
@@ -149,7 +153,7 @@ async def _run_consolidation(bank_id: str) -> str:
         for model in auto_models:
             try:
                 query = model.get("source_query") or model["topic"]
-                query_emb = await _embedder.embed(query)
+                query_emb = await _embedder.embed(query, task_type=TASK_TYPE_QUERY)
                 relevant = _db.vec_search(query_emb, bank_id, top_k=20)
                 if relevant:
                     reflection = await _llm.reflect(
@@ -223,7 +227,11 @@ async def _retain_memory(
     config = _db.get_bank_config(bank_id)
     mission = config.get("retain_mission", "")
 
-    embedding = await _embedder.embed(content)
+    # DOCUMENT embedding: this vector is stored. It is also reused as the dedup
+    # query below (vec_search), which compares two to-be-stored documents — a
+    # document-document comparison, so RETRIEVAL_DOCUMENT is the right type and we
+    # avoid a second QUERY embedding call.
+    embedding = await _embedder.embed(content, task_type=TASK_TYPE_DOCUMENT)
 
     # ── Smart Deduplication: check for similar existing memories ──
     similar = _db.vec_search(embedding, bank_id, top_k=5)
@@ -255,7 +263,7 @@ async def _retain_memory(
 
                 # Re-extract entities for merged content
                 extraction = await _llm.extract_entities(merged, mission=mission)
-                merged_emb = await _embedder.embed(merged)
+                merged_emb = await _embedder.embed(merged, task_type=TASK_TYPE_DOCUMENT)
 
                 updated = _db.update_memory(
                     memory_id=target_id,
@@ -430,20 +438,14 @@ async def KIROK_recall(
     if not query or not query.strip():
         return "Error: query must not be empty. Please provide a search term."
 
-    query_embedding = await _embedder.embed(query)
+    query_embedding = await _embedder.embed(query, task_type=TASK_TYPE_QUERY)
 
     # Time-filtered recall stays on the brute-force path (vec0 cannot filter by
     # timestamp); otherwise use the fast vec_search KNN.
     if time_min or time_max:
-        all_memories = _db.get_all_embeddings(bank_id)
-        filtered = []
-        for m in all_memories:
-            ts = m.get("timestamp", "")
-            if time_min and ts < time_min:
-                continue
-            if time_max and ts > time_max:
-                continue
-            filtered.append(m)
+        filtered = _db.get_embeddings_in_range(
+            bank_id, time_min=time_min or None, time_max=time_max or None
+        )
         semantic_results = semantic_search(query_embedding, filtered, top_k=limit)
     else:
         semantic_results = _db.vec_search(query_embedding, bank_id, top_k=limit)
@@ -461,11 +463,10 @@ async def KIROK_recall(
     top_results = merged[:limit]
 
     # ── Observation-first display (inspired by Mem0 knowledge layer) ──
-    obs_embeddings = _db.get_observation_embeddings(bank_id)
-    relevant_obs = []
-    if obs_embeddings:
-        obs_results = semantic_search(query_embedding, obs_embeddings, top_k=5)
-        relevant_obs = [o for o in obs_results if o.get("similarity", 0) > 0.4]
+    # vec_search_observations falls back to brute force internally, so the 0.4
+    # threshold and top_k=5 behave the same with or without the vec extension.
+    obs_results = _db.vec_search_observations(query_embedding, bank_id, top_k=5)
+    relevant_obs = [o for o in obs_results if o.get("similarity", 0) > 0.4]
 
     if not top_results and not relevant_obs:
         return f"No memories found in bank '{bank_id}' matching: {query}"
@@ -535,7 +536,7 @@ async def KIROK_reflect(
     """
     limit = min(max(limit, 1), 100)
 
-    query_embedding = await _embedder.embed(query)
+    query_embedding = await _embedder.embed(query, task_type=TASK_TYPE_QUERY)
     relevant = _db.vec_search(query_embedding, bank_id, top_k=limit)
 
     if not relevant:
@@ -684,16 +685,14 @@ async def KIROK_stats(bank_id: str) -> str:
         bank_id: Memory bank identifier.
     """
     stats = _db.get_stats(bank_id)
-    obs_count = len(_db.get_observations(bank_id, limit=1000))
-    uncons = len(_db.get_unconsolidated_memories(bank_id, limit=1000))
     config = _db.get_bank_config(bank_id)
 
     return (
         f"Stats for '{stats['bank_id']}':\n"
         f"- Memories: {stats['memory_count']}\n"
         f"- Mental Models: {stats['mental_model_count']}\n"
-        f"- Observations: {obs_count}\n"
-        f"- Unconsolidated memories: {uncons}\n"
+        f"- Observations: {stats['observations_count']}\n"
+        f"- Unconsolidated memories: {stats['unconsolidated_count']}\n"
         f"- Retain Mission: {'set' if config['retain_mission'] else 'not set'}\n"
         f"- Observations Mission: {'set' if config['observations_mission'] else 'not set'}\n"
     )
@@ -808,10 +807,16 @@ async def KIROK_update_memory(
     new_embedding = None
 
     if new_content:
-        extraction = await _llm.extract_entities(new_content)
+        mem = _db.get_memory(memory_id)
+        if not mem:
+            return f"Memory {memory_id} not found."
+        # Mirror _retain_memory: extract under the bank's retain mission so
+        # entities/keywords stay consistent with how the memory was first stored.
+        mission = _db.get_bank_config(mem["bank_id"]).get("retain_mission", "")
+        extraction = await _llm.extract_entities(new_content, mission=mission)
         new_entities = extraction["entities"]
         new_keywords = extraction["keywords"]
-        new_embedding = await _embedder.embed(new_content)
+        new_embedding = await _embedder.embed(new_content, task_type=TASK_TYPE_DOCUMENT)
 
     updated = _db.update_memory(
         memory_id=memory_id,
@@ -961,7 +966,7 @@ async def KIROK_refresh_mental_model(
     query = model.get("source_query") or model["topic"]
     bank_id = model["bank_id"]
 
-    query_embedding = await _embedder.embed(query)
+    query_embedding = await _embedder.embed(query, task_type=TASK_TYPE_QUERY)
     relevant = _db.vec_search(query_embedding, bank_id, top_k=limit)
 
     if not relevant:

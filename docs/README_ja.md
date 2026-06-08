@@ -389,7 +389,8 @@ uv run kirok-doctor
 
 このコマンドは Python バージョン、`.env` の読み込み、`GEMINI_API_KEY`
 の有無（キーの値は表示しません）、必要な Python モジュール、SQLite FTS5、
-データベース保存先の書き込み可否を確認します。Gemini や外部 API への通信は行いません。
+sqlite-vec 拡張（KNN 検索の土台）、データベース保存先の書き込み可否を確認します。
+Gemini や外部 API への通信は行いません。
 
 JSON 出力もできます：
 

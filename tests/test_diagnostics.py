@@ -32,6 +32,35 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(result.status, "fail")
         self.assertIn("FTS5", result.message)
 
+    def test_sqlite_vec_load_failure_is_reported(self) -> None:
+        def failing_connect(path: str):
+            raise sqlite3.OperationalError("cannot load extension")
+
+        result = diagnostics._check_sqlite_vec(connect=failing_connect)
+
+        self.assertEqual(result.status, "fail")
+        self.assertIn("sqlite-vec", result.message)
+
+    def test_sqlite_vec_import_failure_is_reported(self) -> None:
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "sqlite_vec":
+                raise ImportError("no module named sqlite_vec")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            result = diagnostics._check_sqlite_vec()
+
+        self.assertEqual(result.status, "fail")
+        self.assertIn("importable", result.message)
+
+    def test_run_diagnostics_includes_sqlite_vec_check(self) -> None:
+        names = {r.name for r in diagnostics.run_diagnostics()}
+        self.assertIn("sqlite_vec", names)
+
     def test_db_path_writable_uses_parent_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "nested" / "memory.db"

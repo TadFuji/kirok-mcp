@@ -4,9 +4,16 @@ Uses gemini-embedding-001 model for text embedding generation
 and provides cosine similarity utilities for vector search.
 """
 
+import logging
+
 import numpy as np
 from google import genai
+from google.genai import types
 
+from kirok_mcp.retry import with_retry
+
+
+logger = logging.getLogger("kirok.embeddings")
 
 # Embedding model — GA as of July 2025, 2048 max tokens, 100+ languages
 EMBEDDING_MODEL = "gemini-embedding-001"
@@ -15,7 +22,15 @@ EMBEDDING_MODEL = "gemini-embedding-001"
 # unset (the model's full-fidelity default). This MUST match both the vec0
 # schema `float[EMBEDDING_DIM]` and the float32 BLOBs already stored in
 # memory.db (12288 bytes = 3072 float32). Do not change without re-embedding.
+# At 3072 the model returns pre-normalized vectors, so no manual L2 step is
+# needed (a smaller output_dimensionality would require one).
 EMBEDDING_DIM = 3072
+
+# Asymmetric retrieval task types. Stored documents (memories, observations) use
+# RETRIEVAL_DOCUMENT; search queries use RETRIEVAL_QUERY. The pairing improves
+# retrieval relevance over symmetric (untyped) embeddings.
+TASK_TYPE_DOCUMENT = "RETRIEVAL_DOCUMENT"
+TASK_TYPE_QUERY = "RETRIEVAL_QUERY"
 
 
 class EmbeddingClient:
@@ -24,27 +39,42 @@ class EmbeddingClient:
     def __init__(self, api_key: str):
         self.client = genai.Client(api_key=api_key)
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed(
+        self, text: str, task_type: str = TASK_TYPE_DOCUMENT
+    ) -> list[float]:
         """Generate embedding vector for a single text input.
 
         Uses the SDK's async client (``client.aio``) so the call yields to the
         event loop instead of blocking it — this is what lets concurrent MCP
         requests overlap and lets ``asyncio.wait_for`` timeouts actually fire.
+
+        ``task_type`` defaults to RETRIEVAL_DOCUMENT (the safe, storage side);
+        callers searching pass RETRIEVAL_QUERY.
         """
-        result = await self.client.aio.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=text,
+        result = await with_retry(
+            lambda: self.client.aio.models.embed_content(
+                model=EMBEDDING_MODEL,
+                contents=text,
+                config=types.EmbedContentConfig(task_type=task_type),
+            ),
+            logger=logger,
         )
         return list(result.embeddings[0].values)
 
-    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def embed_batch(
+        self, texts: list[str], task_type: str = TASK_TYPE_DOCUMENT
+    ) -> list[list[float]]:
         """Generate embeddings for multiple texts in one call."""
         if not texts:
             return []
 
-        result = await self.client.aio.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=texts,
+        result = await with_retry(
+            lambda: self.client.aio.models.embed_content(
+                model=EMBEDDING_MODEL,
+                contents=texts,
+                config=types.EmbedContentConfig(task_type=task_type),
+            ),
+            logger=logger,
         )
         return [list(e.values) for e in result.embeddings]
 
@@ -75,17 +105,33 @@ def semantic_search(
     Returns:
         Top-k candidates with added 'similarity' score, sorted descending.
     """
-    scored = []
-    for item in candidates:
-        # Skip candidates whose stored vector width does not match the query.
-        # cosine_similarity (np.dot) would otherwise raise on mismatched shapes;
-        # this keeps the brute-force path aligned with vec_search, which also
-        # excludes off-size vectors from the index.
-        if len(item["embedding"]) != len(query_embedding):
-            continue
-        sim = cosine_similarity(query_embedding, item["embedding"])
-        scored.append({**item, "similarity": sim})
+    if not candidates:
+        return []
 
+    q = np.asarray(query_embedding, dtype=np.float32)
+    qd = q.shape[0]
+
+    # Keep only candidates whose stored vector width matches the query, then
+    # stack into one (N, D) matrix. Mismatched lengths would make np.array build
+    # an object array and break the matmul; this also keeps the brute-force path
+    # aligned with vec_search, which excludes off-size vectors from the index.
+    kept = [c for c in candidates if len(c["embedding"]) == qd]
+    if not kept:
+        return []
+
+    mat = np.array([c["embedding"] for c in kept], dtype=np.float32)  # (N, D)
+    q_norm = np.linalg.norm(q)
+    row_norms = np.linalg.norm(mat, axis=1)
+    denom = row_norms * q_norm
+    dots = mat @ q
+    # Match cosine_similarity: a zero-norm vector (query or candidate) scores 0.0.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sims = np.where(denom > 0, dots / denom, 0.0)
+
+    scored = [{**item, "similarity": float(s)} for item, s in zip(kept, sims)]
+    # Stable sort preserves input order for equal scores, matching the previous
+    # per-item loop. np.argsort is unstable and would reorder ties, perturbing
+    # recall output order and downstream RRF ranks.
     scored.sort(key=lambda x: x["similarity"], reverse=True)
     return scored[:top_k]
 

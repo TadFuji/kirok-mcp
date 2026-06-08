@@ -12,6 +12,8 @@ import logging
 
 from google import genai
 
+from kirok_mcp.retry import with_retry
+
 
 LLM_MODEL = "gemini-2.5-flash-lite"
 
@@ -88,9 +90,12 @@ Text:
 
 Respond with ONLY valid JSON, no markdown formatting, no explanation."""
 
-        response = await self.client.aio.models.generate_content(
-            model=LLM_MODEL,
-            contents=prompt,
+        response = await with_retry(
+            lambda: self.client.aio.models.generate_content(
+                model=LLM_MODEL,
+                contents=prompt,
+            ),
+            logger=logger,
         )
 
         result = _parse_json_response(response.text)
@@ -147,9 +152,12 @@ Return a JSON object with exactly these keys:
 
 Respond with ONLY valid JSON, no markdown formatting, no explanation."""
 
-        response = await self.client.aio.models.generate_content(
-            model=LLM_MODEL,
-            contents=prompt,
+        response = await with_retry(
+            lambda: self.client.aio.models.generate_content(
+                model=LLM_MODEL,
+                contents=prompt,
+            ),
+            logger=logger,
         )
 
         result = _parse_json_response(response.text)

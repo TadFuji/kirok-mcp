@@ -139,6 +139,79 @@ def test_vec_search_small_bank_not_crowded_out():
         db.close()
 
 
+def _setup_db_with_observations(n: int = 10, bank_id: str = "b1"):
+    """Create a temp DB with n observations, each with a unique embedding."""
+    tmp = tempfile.mkdtemp()
+    path = Path(tmp) / "test.db"
+    db = MemoryDB(db_path=path)
+    db.connect()
+    anchor = db.insert_memory(bank_id=bank_id, content="anchor", embedding=_make_vec(0.0))
+    ids = []
+    for i in range(n):
+        oid = db.insert_observation(
+            bank_id, f"observation {i}", [anchor], embedding=_make_vec(float(i) * 0.1)
+        )
+        ids.append(oid)
+    return db, tmp, ids
+
+
+def test_vec_search_observations_returns_results():
+    db, tmp, ids = _setup_db_with_observations(8, "b1")
+    try:
+        if not db._vec_available:
+            pytest.skip("sqlite-vec not loaded")
+        results = db.vec_search_observations(_make_vec(0.05), "b1", top_k=5)
+        assert 0 < len(results) <= 5
+        for r in results:
+            assert {"id", "content", "similarity"} <= set(r)
+            assert 0.0 <= r["similarity"] <= 1.0
+    finally:
+        db.close()
+
+
+def test_vec_search_observations_filters_by_bank():
+    db, tmp, _ = _setup_db_with_observations(5, "b1")
+    try:
+        if not db._vec_available:
+            pytest.skip("sqlite-vec not loaded")
+        m2 = db.insert_memory(bank_id="b2", content="x", embedding=_make_vec(0.0))
+        for i in range(5):
+            db.insert_observation("b2", f"other {i}", [m2], embedding=_make_vec(float(i) * 0.1))
+        results = db.vec_search_observations(_make_vec(0.05), "b1", top_k=10)
+        b1_obs_ids = {o["id"] for o in db.get_observations("b1", limit=100)}
+        for r in results:
+            assert r["id"] in b1_obs_ids
+    finally:
+        db.close()
+
+
+def test_vec_search_observations_matches_brute_force():
+    db, tmp, ids = _setup_db_with_observations(12, "b1")
+    try:
+        if not db._vec_available:
+            pytest.skip("sqlite-vec not loaded")
+        q = _make_vec(0.15)
+        vec_ids = {r["id"] for r in db.vec_search_observations(q, "b1", top_k=5)}
+        bf_ids = {r["id"] for r in db._brute_force_search_observations(q, "b1", top_k=5)}
+        union = vec_ids | bf_ids
+        jaccard = len(vec_ids & bf_ids) / len(union) if union else 1.0
+        assert jaccard >= 0.6, f"vec vs brute-force Jaccard={jaccard}"
+    finally:
+        db.close()
+
+
+def test_vec_search_observations_fallback_when_unavailable():
+    db, tmp, ids = _setup_db_with_observations(5, "b1")
+    try:
+        db._vec_available = False
+        results = db.vec_search_observations(_make_vec(0.05), "b1", top_k=3)
+        assert 0 < len(results) <= 3
+        for r in results:
+            assert "similarity" in r
+    finally:
+        db.close()
+
+
 def test_vec_search_dedup_survives_large_noise_bank():
     """The dedup path (top_k=5) must still surface a near-duplicate in a small
     bank even when a large, closer bank floods the global nearest neighbours."""

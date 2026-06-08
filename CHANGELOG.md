@@ -11,14 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedding and LLM calls now use the async Gemini client (`client.aio`) instead of blocking calls, so concurrent requests overlap and `KIROK_REFLECT_TIMEOUT` / `KIROK_CONSOLIDATION_TIMEOUT` actually take effect (they previously could not interrupt a blocking SDK call)
 - Auto-consolidation is now debounced: it runs once at least `KIROK_CONSOLIDATION_BATCH_SIZE` (default 5) memories are pending, instead of after every retain — cutting `KIROK_retain` latency and Gemini token usage. The consolidation report is no longer appended to the retain reply
 - `KIROK_recall` output is compact by default (content + ID only); pass `verbose=true` to include RRF/Sim relevance scores
+- **Japanese keyword search**: FTS5 now uses the `trigram` tokenizer instead of the default (which split CJK into single characters, leaving BM25 ineffective for Japanese). Existing databases rebuild their FTS index automatically on the next connect (rebuilt from the source tables, in a transaction that rolls back on failure). Queries shorter than 3 characters are served by semantic search instead (trigram cannot index them)
+- **Embeddings use asymmetric task types**: stored content uses `RETRIEVAL_DOCUMENT`, search queries use `RETRIEVAL_QUERY`, improving retrieval relevance. Dimension stays 3072 (pre-normalized). Existing data must be re-embedded once via `scripts/reembed.py` to gain the benefit
+- Observation recall now uses a per-bank sqlite-vec `vec0` KNN (`vec_observations`) with transparent brute-force fallback, mirroring memory search
+- Time-range `KIROK_recall` now filters by timestamp in SQL before scoring, instead of loading the whole bank into memory
+- `KIROK_stats` counts observations and unconsolidated memories via `COUNT(*)` (accurate beyond 1000 rows; previously capped)
+- `KIROK_update_memory` now re-extracts entities/keywords under the bank's `retain_mission`, consistent with the retain pipeline
+- Gemini embedding and LLM calls retry transient failures (5xx, 429, network) with bounded exponential backoff; structured errors (auth/bad-request) still fail fast
+- `semantic_search` is vectorized (single numpy matrix op) for faster brute-force/observation/time-range scoring
 
 ### Added
 - `KIROK_CONSOLIDATION_BATCH_SIZE` environment variable (default 5) to tune auto-consolidation debouncing (set to 1 to restore per-retain consolidation)
 - `verbose` parameter on `KIROK_recall`
 - `MemoryDB.count_unconsolidated_memories` helper
+- `scripts/reembed.py`: idempotent, resumable re-embedding of all memories and observations (with `--dry-run`, backup-required gate, and a post-run integrity check)
+- `kirok-doctor` now checks that the sqlite-vec extension loads (the actual KNN backend), not just FTS5
+- `vec_observations` table plus `MemoryDB.vec_search_observations`, `get_embeddings_in_range`, `update_memory_embedding`, and `update_observation_embedding` helpers
+- New offline tests: `test_retry.py`, `test_fts_trigram.py`, and observation-vector / task-type / stats cases
 
 ### Fixed
 - `KIROK_smart_retain` now honors `threshold` values below 5. Previously a hardcoded `score >= 5` floor in importance evaluation silently overrode lower thresholds, so `threshold=3` could never retain a score-3/4 item (e.g. a subtle preference)
+- `clear_bank`, `delete_bank`, `delete_observation`, and `clear_observations` now keep the observation vector index in sync
 
 ## [1.1.0] - 2026-06-06
 

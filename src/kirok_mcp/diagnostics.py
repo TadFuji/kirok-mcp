@@ -125,6 +125,44 @@ def _check_sqlite_fts5(
     return DiagnosticResult("sqlite_fts5", "pass", "SQLite FTS5 is available.")
 
 
+def _check_sqlite_vec(
+    connect: Callable[[str], sqlite3.Connection] = sqlite3.connect,
+) -> DiagnosticResult:
+    """Check that the sqlite-vec extension can load and create a vec0 table.
+
+    This is the actual KNN backend; without it recall silently falls back to the
+    slower brute-force cosine path, so a failure here is worth surfacing. The
+    load steps mirror ``MemoryDB._load_vec_extension``. The probe dimension is a
+    tiny fixed ``float[4]`` — this checks loadability, not the production width.
+    """
+    try:
+        import sqlite_vec  # noqa: F401
+    except Exception as exc:
+        return DiagnosticResult(
+            "sqlite_vec",
+            "fail",
+            f"sqlite-vec Python package is not importable: {exc}. Run 'uv sync'.",
+        )
+    try:
+        conn = connect(":memory:")
+        try:
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+            conn.execute(
+                "CREATE VIRTUAL TABLE kirok_vec_check USING vec0(embedding float[4])"
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        return DiagnosticResult(
+            "sqlite_vec",
+            "fail",
+            f"sqlite-vec extension failed to load: {exc}",
+        )
+    return DiagnosticResult("sqlite_vec", "pass", "sqlite-vec (vec0) is available.")
+
+
 def _check_db_path_writable(raw_path: str | None = None) -> DiagnosticResult:
     path = _resolve_db_path(raw_path)
     parent = path.parent
@@ -162,6 +200,7 @@ def run_diagnostics(
         _check_dependency("numpy"),
         _check_dependency("dotenv"),
         _check_sqlite_fts5(),
+        _check_sqlite_vec(),
         _check_db_path_writable(db_path or os.environ.get("KIROK_DB_PATH")),
     ]
 
