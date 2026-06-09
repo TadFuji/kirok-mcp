@@ -404,6 +404,28 @@ uv run kirok-doctor --json
 uv run python -m kirok_mcp.diagnostics
 ```
 
+## 💾 バックアップと復元
+
+すべての記憶は 1 つの SQLite ファイルに保存されるため、`kirok-backup`
+コマンドで定期的に控えを取ってください（オフライン動作・API キー不要）：
+
+```bash
+# データベースファイルの安全な複製（サーバー稼働中でも実行可）
+uv run kirok-backup snapshot
+
+# 全バンクの JSON 書き出し（記憶・観測・メンタルモデル・設定）
+uv run kirok-backup export
+
+# JSON からの復元 — 既存 ID は飛ばされ、上書きは起きません
+uv run kirok-backup import ~/.kirok/backups/kirok-export-20260610-081853.json
+```
+
+`snapshot` と `export` は `~/.kirok/backups/` にタイムスタンプ付きで保存し、
+既存ファイルの上書きを拒否します。`import` は単一トランザクション
+（全件成功か全件取り消しか）で実行され、全文検索・ベクトル検索の索引も
+再構築されるため、復元直後から検索が機能します。別のデータベースファイルを
+対象にするには `--db` を使います。
+
 ## 🧪 仕組み
 
 ### 記憶 → 想起 → 考察 のサイクル

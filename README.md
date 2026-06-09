@@ -477,6 +477,28 @@ If your local environment cannot run the script entry point, use the module form
 uv run python -m kirok_mcp.diagnostics
 ```
 
+## 💾 Backup & Restore
+
+All memories live in a single SQLite file, so back it up regularly with the
+offline `kirok-backup` command (no API key needed):
+
+```bash
+# Byte-level copy of the database (safe while the server is running)
+uv run kirok-backup snapshot
+
+# Portable JSON export of all banks (memories, observations, models, configs)
+uv run kirok-backup export
+
+# Restore from a JSON export — existing IDs are skipped, never overwritten
+uv run kirok-backup import ~/.kirok/backups/kirok-export-20260610-081853.json
+```
+
+Both `snapshot` and `export` default to timestamped files under
+`~/.kirok/backups/` and refuse to overwrite existing files. `import` runs in a
+single transaction (all-or-nothing) and rebuilds the FTS and vector indexes, so
+search works immediately on the restored data. Use `--db` to target a different
+database file (e.g. restoring into a fresh one).
+
 ## 🧪 How It Works
 
 ### The Retain → Recall → Reflect Loop
