@@ -485,5 +485,119 @@ class UpdateMemoryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("not found", result)
 
 
+class _FakeDedupDB:
+    """DB whose vec_search always returns one highly similar memory."""
+
+    def __init__(self, update_result: bool = True):
+        self._update_result = update_result
+        self.update_calls = []
+        self.insert_calls = []
+
+    def get_bank_config(self, bank_id: str) -> dict:
+        return {"bank_id": bank_id, "retain_mission": "", "observations_mission": ""}
+
+    def vec_search(self, query_embedding, bank_id, top_k, **kwargs) -> list[dict]:
+        return [{
+            "id": "existing-1",
+            "content": "User prefers dark mode.",
+            "similarity": 0.95,
+            "timestamp": "2026-06-01T00:00:00+00:00",
+            "context": "",
+            "entities": [],
+            "keywords": [],
+        }]
+
+    def update_memory(self, **kwargs) -> bool:
+        self.update_calls.append(kwargs)
+        return self._update_result
+
+    def insert_memory(self, **kwargs) -> str:
+        self.insert_calls.append(kwargs)
+        return "new-1"
+
+    def count_unconsolidated_memories(self, bank_id: str) -> int:
+        return 0  # keeps _maybe_consolidate a no-op
+
+
+class _FakeDedupLLM:
+    def __init__(self, dedup_result: dict):
+        self._dedup_result = dedup_result
+        self.dedup_calls = []
+
+    async def deduplicate(self, new_content, similar_memories, mission="") -> dict:
+        self.dedup_calls.append(new_content)
+        return self._dedup_result
+
+    async def extract_entities(self, content: str, mission: str = "") -> dict:
+        return {"entities": ["e1"], "keywords": ["k1"]}
+
+
+class RetainDedupTest(unittest.IsolatedAsyncioTestCase):
+    """The dedup decision branches of _retain_memory (NOOP / UPDATE / fall-through).
+
+    WHY: these branches decide whether user data is silently dropped (NOOP),
+    merged into an existing memory (UPDATE), or stored fresh. A regression here
+    loses memories without any error, so each outcome is pinned.
+    """
+
+    def setUp(self) -> None:
+        self.original = (server._db, server._llm, server._embedder)
+        server._embedder = _FakeEmbedder()
+
+    def tearDown(self) -> None:
+        server._db, server._llm, server._embedder = self.original
+
+    async def test_noop_skips_storage_and_says_so(self) -> None:
+        db = _FakeDedupDB()
+        server._db = db
+        server._llm = _FakeDedupLLM({"action": "noop", "reason": "exact duplicate"})
+
+        result = await server.KIROK_retain(bank_id="b", content="User prefers dark mode.")
+
+        self.assertIn("NOT stored", result)
+        self.assertIn("NOOP", result)
+        self.assertIn("existing-1", result)
+        self.assertEqual(db.insert_calls, [])
+        self.assertEqual(db.update_calls, [])
+
+    async def test_update_merges_into_existing_memory(self) -> None:
+        db = _FakeDedupDB(update_result=True)
+        server._db = db
+        server._llm = _FakeDedupLLM({
+            "action": "update",
+            "reason": "adds detail",
+            "target_memory_id": "existing-1",
+            "merged_content": "User prefers dark mode, especially at night.",
+        })
+
+        result = await server.KIROK_retain(bank_id="b", content="dark mode at night")
+
+        self.assertIn("UPDATE", result)
+        self.assertIn("existing-1", result)
+        self.assertEqual(len(db.update_calls), 1)
+        self.assertEqual(
+            db.update_calls[0]["content"],
+            "User prefers dark mode, especially at night.",
+        )
+        self.assertEqual(db.insert_calls, [])
+
+    async def test_failed_update_falls_through_to_add(self) -> None:
+        # If the dedup target vanished (update_memory returns False), the
+        # content must still be stored as a new memory — never lost.
+        db = _FakeDedupDB(update_result=False)
+        server._db = db
+        server._llm = _FakeDedupLLM({
+            "action": "update",
+            "reason": "adds detail",
+            "target_memory_id": "ghost",
+            "merged_content": "merged",
+        })
+
+        result = await server.KIROK_retain(bank_id="b", content="dark mode at night")
+
+        self.assertIn("ADD", result)
+        self.assertEqual(len(db.insert_calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
