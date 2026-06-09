@@ -26,9 +26,13 @@ The main entry point. Built on [FastMCP](https://github.com/jlowin/fastmcp), it:
 - Manages the Retain-Recall-Reflect lifecycle
 - Orchestrates observation consolidation
 
-### 2. Database (`db.py`)
+### 2. Database (`db/` package)
 
-SQLite-backed storage with FTS5 full-text search. Key design decisions:
+SQLite-backed storage with FTS5 full-text search. The public facade is
+`MemoryDB` (`db/core.py`), composed from per-domain mixins: `schema.py`
+(tables and migrations), `memories.py`, `search.py`, `observations.py`,
+`models.py`, and `banks.py`, with shared helpers in `base.py`. Import surface
+is unchanged (`from kirok_mcp.db import MemoryDB`). Key design decisions:
 - **WAL mode** for concurrent read/write performance
 - **Binary BLOB storage** for embedding vectors (packed float32 arrays)
 - **FTS5 virtual tables** for keyword search with BM25 ranking, using the

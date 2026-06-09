@@ -697,7 +697,18 @@ kirok-mcp/
 ├── src/kirok_mcp/
 │   ├── __init__.py       # Package metadata
 │   ├── server.py         # MCP server + 19 tool definitions
-│   ├── db.py             # SQLite database layer + FTS5
+│   ├── db/               # SQLite database layer, split by domain
+│   │   ├── core.py       #   MemoryDB facade (composes the mixins below)
+│   │   ├── schema.py     #   Tables, FTS5 + sqlite-vec setup & migrations
+│   │   ├── memories.py   #   Memory CRUD
+│   │   ├── search.py     #   FTS5 keyword search + vector KNN
+│   │   ├── observations.py #  Observation CRUD
+│   │   ├── models.py     #   Mental model CRUD
+│   │   ├── banks.py      #   Bank stats/config/deletion + failure log
+│   │   └── base.py       #   Shared helpers (vectors, paths, sanitizing)
+│   ├── backup.py         # kirok-backup CLI (export/import/snapshot)
+│   ├── diagnostics.py    # kirok-doctor offline checks
+│   ├── retry.py          # Bounded exponential backoff for API calls
 │   ├── llm.py            # Gemini LLM for extraction & reflection
 │   └── embeddings.py     # Gemini Embeddings + similarity utils
 ├── docs/

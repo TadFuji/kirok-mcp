@@ -4,7 +4,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import kirok_mcp.db as dbmod
+# The FTS rebuild lives in the schema submodule; patches must target the
+# namespace the rebuild actually calls into.
+import kirok_mcp.db.schema as dbmod
 from kirok_mcp.db import MemoryDB
 
 

@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `db.py` (2000 lines) is now the `kirok_mcp.db` package, split by domain (schema, memories, search, observations, models, banks) and composed into the unchanged `MemoryDB` facade; the import surface is identical
+- The six copies of the vec-index sync (delete-then-insert with size guard) are consolidated into one `_sync_vec_row` helper
+- `KIROK_stats` now reports recent background failures (see Added)
 - Embedding and LLM calls now use the async Gemini client (`client.aio`) instead of blocking calls, so concurrent requests overlap and `KIROK_REFLECT_TIMEOUT` / `KIROK_CONSOLIDATION_TIMEOUT` actually take effect (they previously could not interrupt a blocking SDK call)
 - Auto-consolidation is now debounced: it runs once at least `KIROK_CONSOLIDATION_BATCH_SIZE` (default 5) memories are pending, instead of after every retain — cutting `KIROK_retain` latency and Gemini token usage. The consolidation report is no longer appended to the retain reply
 - `KIROK_recall` output is compact by default (content + ID only); pass `verbose=true` to include RRF/Sim relevance scores
