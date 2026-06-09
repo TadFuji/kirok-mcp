@@ -572,6 +572,36 @@ class MemoryDB:
             self.conn.rollback()
             raise
 
+    def _sync_vec_row(
+        self,
+        table: str,
+        id_column: str,
+        row_id: str,
+        bank_id: str,
+        emb_blob: bytes | None,
+    ) -> None:
+        """Bring one vec index row in line with its base-table embedding.
+
+        vec0 has no INSERT OR REPLACE on a TEXT primary key, so this is a
+        delete-then-insert. Only well-formed EMBEDDING_DIM vectors belong in
+        the float[EMBEDDING_DIM] table; off-size or NULL embeddings just
+        remove the stale row (those memories stay searchable via the
+        brute-force path). No-op when the extension is unavailable.
+
+        Runs inside the caller's transaction — no commit here.
+        """
+        assert self.conn is not None
+        if not self._vec_available:
+            return
+
+        self.conn.execute(f"DELETE FROM {table} WHERE {id_column} = ?", (row_id,))
+        if emb_blob is not None and len(emb_blob) == EMBEDDING_DIM * 4:
+            self.conn.execute(
+                f"INSERT INTO {table} ({id_column}, bank_id, embedding) "
+                "VALUES (?, ?, ?)",
+                (row_id, bank_id, emb_blob),
+            )
+
     def _migrate_schema(self) -> None:
         """Apply incremental schema changes to existing tables."""
         assert self.conn is not None
@@ -641,20 +671,7 @@ class MemoryDB:
                 (memory_id, bank_id, content, " ".join(ent), " ".join(kw), context),
             )
 
-            # Keep the vec index in sync (fresh id, no conflict possible). Only
-            # well-formed EMBEDDING_DIM vectors belong in the float[EMBEDDING_DIM]
-            # table; off-size vectors (e.g. test fixtures) stay searchable via the
-            # brute-force path instead of corrupting the index.
-            if (
-                self._vec_available
-                and emb_blob is not None
-                and len(embedding) == EMBEDDING_DIM
-            ):
-                self.conn.execute(
-                    "INSERT INTO vec_memories (memory_id, bank_id, embedding) "
-                    "VALUES (?, ?, ?)",
-                    (memory_id, bank_id, emb_blob),
-                )
+            self._sync_vec_row("vec_memories", "memory_id", memory_id, bank_id, emb_blob)
 
             self.conn.commit()
         except Exception:
@@ -1136,22 +1153,9 @@ class MemoryDB:
                 ),
             )
 
-            # Keep the vec index in sync. vec0 has no INSERT OR REPLACE on a TEXT
-            # primary key, so delete-then-insert. If the embedding became NULL we
-            # just remove the stale vec row.
-            if self._vec_available:
-                self.conn.execute(
-                    "DELETE FROM vec_memories WHERE memory_id = ?", (memory_id,)
-                )
-                if (
-                    new_emb_blob is not None
-                    and len(new_emb_blob) == EMBEDDING_DIM * 4  # 4 bytes / float32
-                ):
-                    self.conn.execute(
-                        "INSERT INTO vec_memories (memory_id, bank_id, embedding) "
-                        "VALUES (?, ?, ?)",
-                        (memory_id, row["bank_id"], new_emb_blob),
-                    )
+            self._sync_vec_row(
+                "vec_memories", "memory_id", memory_id, row["bank_id"], new_emb_blob
+            )
 
             self.conn.commit()
         except Exception:
@@ -1194,15 +1198,9 @@ class MemoryDB:
                 "UPDATE memories SET embedding = ? WHERE id = ?",
                 (emb_blob, memory_id),
             )
-            if self._vec_available:
-                self.conn.execute(
-                    "DELETE FROM vec_memories WHERE memory_id = ?", (memory_id,)
-                )
-                self.conn.execute(
-                    "INSERT INTO vec_memories (memory_id, bank_id, embedding) "
-                    "VALUES (?, ?, ?)",
-                    (memory_id, row["bank_id"], emb_blob),
-                )
+            self._sync_vec_row(
+                "vec_memories", "memory_id", memory_id, row["bank_id"], emb_blob
+            )
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -1582,20 +1580,9 @@ class MemoryDB:
                 (obs_id, bank_id, content),
             )
 
-            # Keep the vec index in sync (fresh id, no conflict). Only well-formed
-            # EMBEDDING_DIM vectors belong in the float[EMBEDDING_DIM] table;
-            # off-size vectors (e.g. test fixtures) stay on the brute-force path.
-            if (
-                self._vec_available
-                and emb_blob is not None
-                and embedding is not None
-                and len(embedding) == EMBEDDING_DIM
-            ):
-                self.conn.execute(
-                    "INSERT INTO vec_observations "
-                    "(observation_id, bank_id, embedding) VALUES (?, ?, ?)",
-                    (obs_id, bank_id, emb_blob),
-                )
+            self._sync_vec_row(
+                "vec_observations", "observation_id", obs_id, bank_id, emb_blob
+            )
 
             self.conn.commit()
         except Exception:
@@ -1643,20 +1630,13 @@ class MemoryDB:
                 (observation_id, row["bank_id"], content),
             )
 
-            # Keep the vec index in sync. vec0 has no INSERT OR REPLACE on a TEXT
-            # primary key, so delete-then-insert. If the embedding became NULL we
-            # just remove the stale vec row.
-            if self._vec_available:
-                self.conn.execute(
-                    "DELETE FROM vec_observations WHERE observation_id = ?",
-                    (observation_id,),
-                )
-                if emb_blob is not None and len(emb_blob) == EMBEDDING_DIM * 4:
-                    self.conn.execute(
-                        "INSERT INTO vec_observations "
-                        "(observation_id, bank_id, embedding) VALUES (?, ?, ?)",
-                        (observation_id, row["bank_id"], emb_blob),
-                    )
+            self._sync_vec_row(
+                "vec_observations",
+                "observation_id",
+                observation_id,
+                row["bank_id"],
+                emb_blob,
+            )
 
             self.conn.commit()
         except Exception:
@@ -1726,16 +1706,13 @@ class MemoryDB:
                 "UPDATE observations SET embedding = ? WHERE id = ?",
                 (emb_blob, observation_id),
             )
-            if self._vec_available:
-                self.conn.execute(
-                    "DELETE FROM vec_observations WHERE observation_id = ?",
-                    (observation_id,),
-                )
-                self.conn.execute(
-                    "INSERT INTO vec_observations "
-                    "(observation_id, bank_id, embedding) VALUES (?, ?, ?)",
-                    (observation_id, row["bank_id"], emb_blob),
-                )
+            self._sync_vec_row(
+                "vec_observations",
+                "observation_id",
+                observation_id,
+                row["bank_id"],
+                emb_blob,
+            )
             self.conn.commit()
         except Exception:
             self.conn.rollback()
