@@ -542,16 +542,19 @@ Create as many banks as you need. Your AI agent will suggest appropriate bank na
 
 ## 🧑‍💻 Development
 
-Run the unit test suite:
+Run the test suite (pytest is the standard runner; it also collects the
+unittest-style test classes):
 
 ```bash
-uv run python -m unittest discover -s tests
+uv run pytest
 ```
 
 The tests cover the SQLite database layer, FTS query handling, bank clearing and
 deletion consistency, embedding utilities, Smart Retain's routing through the
-shared Retain pipeline, Reflect auto-refresh options, and offline diagnostics.
-They do not call Gemini or any external API.
+shared Retain pipeline, Reflect auto-refresh options, backup/export/import
+roundtrips, the background-failure log, and offline diagnostics. They do not
+call Gemini or any external API. The same suite runs in CI on every push
+(`.github/workflows/test.yml`, Ubuntu and Windows).
 
 ---
 

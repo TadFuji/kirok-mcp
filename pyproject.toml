@@ -56,3 +56,6 @@ packages = ["src/kirok_mcp"]
 dev = [
     "pytest>=8.0.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
