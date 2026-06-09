@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `semantic_search` is vectorized (single numpy matrix op) for faster brute-force/observation/time-range scoring
 
 ### Added
+- Background failures (auto-consolidation, mental-model auto-refresh) are now recorded in a capped `system_events` table and surfaced by `KIROK_stats`, instead of being visible only in server logs
 - `kirok-backup` command: `snapshot` (verified `VACUUM INTO` copy of the live database), `export` (portable JSON of all banks, embeddings included), and `import` (transactional restore that skips existing IDs and rebuilds FTS/vector indexes). Fully offline — no API key required
 - `KIROK_CONSOLIDATION_BATCH_SIZE` environment variable (default 5) to tune auto-consolidation debouncing (set to 1 to restore per-retain consolidation)
 - `verbose` parameter on `KIROK_recall`

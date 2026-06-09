@@ -170,6 +170,11 @@ async def _run_consolidation(bank_id: str) -> str:
                     refreshed += 1
             except Exception as e:
                 logger.warning("Auto-refresh failed for model %s: %s", model["id"], e)
+                _db.record_failure(
+                    bank_id,
+                    "mental_model_auto_refresh",
+                    f"model {model['id']}: {e}",
+                )
 
         if refreshed > 0:
             refresh_summary = f"\n- Mental Models auto-refreshed: {refreshed}"
@@ -212,8 +217,14 @@ async def _maybe_consolidate(bank_id: str) -> None:
         )
     except asyncio.TimeoutError:
         logger.warning("Auto-consolidation timed out for bank '%s'", bank_id)
+        _db.record_failure(
+            bank_id,
+            "auto_consolidation_timeout",
+            f"timed out after {CONSOLIDATION_TIMEOUT}s",
+        )
     except Exception as e:
         logger.warning("Auto-consolidation failed for bank '%s': %s", bank_id, e)
+        _db.record_failure(bank_id, "auto_consolidation", str(e))
 
 
 async def _retain_memory(
@@ -687,15 +698,28 @@ async def KIROK_stats(bank_id: str) -> str:
     stats = _db.get_stats(bank_id)
     config = _db.get_bank_config(bank_id)
 
-    return (
-        f"Stats for '{stats['bank_id']}':\n"
-        f"- Memories: {stats['memory_count']}\n"
-        f"- Mental Models: {stats['mental_model_count']}\n"
-        f"- Observations: {stats['observations_count']}\n"
-        f"- Unconsolidated memories: {stats['unconsolidated_count']}\n"
-        f"- Retain Mission: {'set' if config['retain_mission'] else 'not set'}\n"
-        f"- Observations Mission: {'set' if config['observations_mission'] else 'not set'}\n"
-    )
+    lines = [
+        f"Stats for '{stats['bank_id']}':",
+        f"- Memories: {stats['memory_count']}",
+        f"- Mental Models: {stats['mental_model_count']}",
+        f"- Observations: {stats['observations_count']}",
+        f"- Unconsolidated memories: {stats['unconsolidated_count']}",
+        f"- Retain Mission: {'set' if config['retain_mission'] else 'not set'}",
+        f"- Observations Mission: {'set' if config['observations_mission'] else 'not set'}",
+    ]
+
+    # Surface silent background failures (auto-consolidation, auto-refresh) so
+    # the user learns about them instead of finding stale observations later.
+    failures = _db.get_recent_failures(bank_id, limit=3)
+    if failures:
+        lines.append(f"- Recent background failures (newest {len(failures)}):")
+        for f in failures:
+            detail = f" — {f['detail']}" if f["detail"] else ""
+            lines.append(f"  - [{f['created_at'][:19]}] {f['event']}{detail}")
+    else:
+        lines.append("- Background failures: none recorded")
+
+    return "\n".join(lines) + "\n"
 
 
 # ── Tool: Forget ──────────────────────────────────────────────────────

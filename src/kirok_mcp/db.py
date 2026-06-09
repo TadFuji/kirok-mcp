@@ -26,6 +26,10 @@ from kirok_mcp.embeddings import EMBEDDING_DIM, semantic_search
 
 logger = logging.getLogger("kirok.db")
 
+# Upper bound on retained background-failure rows (oldest pruned on insert),
+# keeping the system_events table from growing without bound.
+MAX_SYSTEM_EVENTS = 200
+
 
 def _serialize_vector(vector: list[float]) -> bytes:
     """Serialize a float vector to bytes for SQLite BLOB storage."""
@@ -227,6 +231,17 @@ class MemoryDB:
 
             CREATE INDEX IF NOT EXISTS idx_observations_bank
                 ON observations(bank_id);
+
+            CREATE TABLE IF NOT EXISTS system_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bank_id TEXT NOT NULL DEFAULT '',
+                event TEXT NOT NULL,
+                detail TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_system_events_bank
+                ON system_events(bank_id, created_at);
         """)
 
         # FTS5 virtual tables (created separately — cannot use IF NOT EXISTS
@@ -1912,6 +1927,71 @@ class MemoryDB:
                 (now, mid),
             )
         self.conn.commit()
+
+    # ── Background Failure Log ────────────────────────────────────────
+
+    def record_failure(self, bank_id: str, event: str, detail: str = "") -> None:
+        """Record a background failure so it can be surfaced to the user.
+
+        Background jobs (auto-consolidation, mental-model auto-refresh) swallow
+        their errors by design — a hiccup must never fail the retain that
+        triggered it. This log is the user-visible trace of those silent
+        failures, shown by ``KIROK_stats``. Best-effort: recording itself never
+        raises, and the log is capped at ``MAX_SYSTEM_EVENTS`` rows.
+        """
+        assert self.conn is not None
+
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            self.conn.execute(
+                "INSERT INTO system_events (bank_id, event, detail, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (bank_id, event, detail, now),
+            )
+            self.conn.execute(
+                "DELETE FROM system_events WHERE id NOT IN "
+                "(SELECT id FROM system_events ORDER BY id DESC LIMIT ?)",
+                (MAX_SYSTEM_EVENTS,),
+            )
+            self.conn.commit()
+        except Exception as e:
+            logger.warning("Could not record failure event '%s': %s", event, e)
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+
+    def get_recent_failures(
+        self, bank_id: str | None = None, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Get recent background failures, newest first.
+
+        ``bank_id=None`` returns failures across all banks.
+        """
+        assert self.conn is not None
+
+        if bank_id is None:
+            rows = self.conn.execute(
+                "SELECT bank_id, event, detail, created_at FROM system_events "
+                "ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT bank_id, event, detail, created_at FROM system_events "
+                "WHERE bank_id = ? ORDER BY id DESC LIMIT ?",
+                (bank_id, limit),
+            ).fetchall()
+
+        return [
+            {
+                "bank_id": r["bank_id"],
+                "event": r["event"],
+                "detail": r["detail"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
 
     def clear_observations(self, bank_id: str) -> int:
         """Clear all observations for a bank. Returns count deleted."""

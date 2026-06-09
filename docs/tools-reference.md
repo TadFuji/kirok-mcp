@@ -225,7 +225,10 @@ List all memory banks with counts. No parameters.
 |------|------|----------|-------------|
 | `bank_id` | string | ✅ | Bank to get stats for |
 
-Returns: memory count, mental model count, observation count, unconsolidated count.
+Returns: memory count, mental model count, observation count, unconsolidated
+count, and the most recent background failures (auto-consolidation /
+mental-model auto-refresh errors that were swallowed to protect the retain
+that triggered them). Shows `Background failures: none recorded` when clean.
 
 ### `KIROK_clear_bank`
 

@@ -320,6 +320,9 @@ class RecallOutputTest(unittest.IsolatedAsyncioTestCase):
 
 
 class _FakeStatsDB:
+    def __init__(self, failures: list | None = None):
+        self._failures = failures or []
+
     def get_stats(self, bank_id: str) -> dict:
         return {
             "bank_id": bank_id,
@@ -335,6 +338,9 @@ class _FakeStatsDB:
             "retain_mission": "mission",
             "observations_mission": "",
         }
+
+    def get_recent_failures(self, bank_id: str = None, limit: int = 5) -> list:
+        return self._failures[:limit]
 
 
 class StatsTest(unittest.IsolatedAsyncioTestCase):
@@ -355,6 +361,28 @@ class StatsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Mental Models: 3", result)
         self.assertIn("Observations: 7", result)
         self.assertIn("Unconsolidated memories: 2", result)
+
+    async def test_stats_reports_no_failures(self) -> None:
+        result = await server.KIROK_stats(bank_id="user-prefs")
+        self.assertIn("Background failures: none recorded", result)
+
+    async def test_stats_surfaces_background_failures(self) -> None:
+        # WHY: background jobs swallow errors so retain never fails; stats is
+        # the one place the user can find out something silently went wrong.
+        server._db = _FakeStatsDB(failures=[
+            {
+                "bank_id": "user-prefs",
+                "event": "auto_consolidation_timeout",
+                "detail": "timed out after 120s",
+                "created_at": "2026-06-10T00:00:00+00:00",
+            }
+        ])
+        result = await server.KIROK_stats(bank_id="user-prefs")
+
+        self.assertIn("Recent background failures", result)
+        self.assertIn("auto_consolidation_timeout", result)
+        self.assertIn("timed out after 120s", result)
+        self.assertNotIn("none recorded", result)
 
 
 class _FakeUpdateDB:
