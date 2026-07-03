@@ -5,9 +5,11 @@ All notable changes to Kirok will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-07-03
 
 ### Changed
+- Importing `kirok_mcp.server` is now side-effect-free: the database connection and Gemini clients are created at server startup (`main()`), and the `GEMINI_API_KEY` check moved from import time to startup — importing the module (tests, tooling) no longer opens the database or exits the process
+- CI no longer needs a dummy `GEMINI_API_KEY`
 - `db.py` (2000 lines) is now the `kirok_mcp.db` package, split by domain (schema, memories, search, observations, models, banks) and composed into the unchanged `MemoryDB` facade; the import surface is identical
 - The six copies of the vec-index sync (delete-then-insert with size guard) are consolidated into one `_sync_vec_row` helper
 - `KIROK_stats` now reports recent background failures (see Added)
@@ -32,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/reembed.py`: idempotent, resumable re-embedding of all memories and observations (with `--dry-run`, backup-required gate, and a post-run integrity check)
 - `kirok-doctor` now checks that the sqlite-vec extension loads (the actual KNN backend), not just FTS5
 - `vec_observations` table plus `MemoryDB.vec_search_observations`, `get_embeddings_in_range`, `update_memory_embedding`, and `update_observation_embedding` helpers
-- New offline tests: `test_retry.py`, `test_fts_trigram.py`, and observation-vector / task-type / stats cases
+- New offline tests: `test_retry.py`, `test_fts_trigram.py`, `test_server_startup.py` (import is side-effect-free; missing API key fails at startup), and observation-vector / task-type / stats cases
 
 ### Fixed
 - `KIROK_smart_retain` now honors `threshold` values below 5. Previously a hardcoded `score >= 5` floor in importance evaluation silently overrode lower thresholds, so `threshold=3` could never retain a score-3/4 item (e.g. a subtle preference)
