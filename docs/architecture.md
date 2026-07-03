@@ -22,7 +22,9 @@ Google Gemini API
 
 The main entry point. Built on [FastMCP](https://github.com/jlowin/fastmcp), it:
 - Registers 19 MCP tools
-- Initializes database, embedding, and LLM clients as module-level singletons
+- Initializes database, embedding, and LLM clients at server startup
+  (`_init_runtime()` from `main()`) — importing the module is side-effect-free,
+  so tests and tooling can import it without an API key or database
 - Manages the Retain-Recall-Reflect lifecycle
 - Orchestrates observation consolidation
 

@@ -32,7 +32,6 @@ _pkg_dir = os.path.dirname(os.path.abspath(__file__))
 _project_dir = os.path.dirname(os.path.dirname(_pkg_dir))
 load_dotenv(os.path.join(_project_dir, ".env"))
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DB_PATH = os.environ.get("KIROK_DB_PATH", None)
 REFLECT_TIMEOUT = int(os.environ.get("KIROK_REFLECT_TIMEOUT", "300"))
 CONSOLIDATION_TIMEOUT = int(os.environ.get("KIROK_CONSOLIDATION_TIMEOUT", "120"))
@@ -41,25 +40,44 @@ CONSOLIDATION_TIMEOUT = int(os.environ.get("KIROK_CONSOLIDATION_TIMEOUT", "120")
 # are pending. Set to 1 to restore the old "consolidate on every retain".
 CONSOLIDATION_BATCH_SIZE = int(os.environ.get("KIROK_CONSOLIDATION_BATCH_SIZE", "5"))
 
-if not GEMINI_API_KEY:
-    print("ERROR: GEMINI_API_KEY environment variable is required.", file=sys.stderr)
-    sys.exit(1)
-
 # ── Logging ───────────────────────────────────────────────────────────
 
-logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s: %(message)s")
 logger = logging.getLogger("kirok.server")
 
-# ── Module-level singletons ──────────────────────────────────────────
+# ── Runtime clients ───────────────────────────────────────────────────
+# Created by _init_runtime() at server startup, NOT at import: importing this
+# module (tests, tooling, diagnostics) must not open the database, require an
+# API key, or register atexit hooks. Tests swap these for fakes.
 
-_db = MemoryDB(db_path=DB_PATH)
-_db.connect()
-atexit.register(_db.close)
-
-_embedder = EmbeddingClient(api_key=GEMINI_API_KEY)
-_llm = LLMClient(api_key=GEMINI_API_KEY)
+_db: MemoryDB | None = None
+_embedder: EmbeddingClient | None = None
+_llm: LLMClient | None = None
 
 mcp = FastMCP("kirok_mcp")
+
+
+def _init_runtime() -> None:
+    """Connect the database and create the Gemini clients.
+
+    Exits with an error if GEMINI_API_KEY is missing — checked here rather
+    than at import so `import kirok_mcp.server` never kills the process.
+    """
+    global _db, _embedder, _llm
+
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        print(
+            "ERROR: GEMINI_API_KEY environment variable is required.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    _db = MemoryDB(db_path=DB_PATH)
+    _db.connect()
+    atexit.register(_db.close)
+
+    _embedder = EmbeddingClient(api_key=api_key)
+    _llm = LLMClient(api_key=api_key)
 
 
 # ── Internal: Deduplication Threshold ─────────────────────────────────
@@ -1034,6 +1052,10 @@ async def KIROK_refresh_mental_model(
 
 def main():
     """Run the Kirok MCP server."""
+    logging.basicConfig(
+        level=logging.INFO, format="%(name)s %(levelname)s: %(message)s"
+    )
+    _init_runtime()
     mcp.run()
 
 

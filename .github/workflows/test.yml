@@ -12,10 +12,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    env:
-      # Tests run fully offline; the key only needs to be present so
-      # importing kirok_mcp.server does not exit at startup.
-      GEMINI_API_KEY: ci-dummy-key
+    # Tests run fully offline and need no GEMINI_API_KEY: importing
+    # kirok_mcp.server is side-effect-free (the key is checked at startup,
+    # not import) and tests swap in fake clients.
     steps:
       - uses: actions/checkout@v6
 

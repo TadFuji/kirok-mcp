@@ -1,15 +1,9 @@
-import os
-import tempfile
 import unittest
-from pathlib import Path
 
-
-_tmpdir = tempfile.TemporaryDirectory()
-os.environ.pop("GOOGLE_API_KEY", None)
-os.environ.setdefault("GEMINI_API_KEY", "test-key")
-os.environ.setdefault("KIROK_DB_PATH", str(Path(_tmpdir.name) / "memory.db"))
-
-from kirok_mcp import server  # noqa: E402
+# Importing the server module is side-effect-free: runtime clients (_db,
+# _embedder, _llm) are created by _init_runtime() at startup, so no API key
+# or database path scaffolding is needed here. Tests swap in fakes.
+from kirok_mcp import server
 
 
 class _FakeDB:
