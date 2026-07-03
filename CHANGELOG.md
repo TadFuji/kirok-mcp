@@ -5,6 +5,19 @@ All notable changes to Kirok will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Short Japanese keyword queries now work**: 1-2 character kanji/katakana tokens (京都, 会議, バグ — below the trigram tokenizer's 3-char window, so they could never MATCH) are now served by an exact-substring LIKE supplement over the FTS text, appended after the BM25-ranked hits. Hiragana-only short tokens stay excluded (function words would substring-match half the bank). Previously these queries silently degraded hybrid search to semantic-only
+- `KIROK_clear_bank` and `KIROK_delete_bank` now require `confirm=true`. Without it they change nothing and return a preview of what would be deleted — a single mistaken tool call can no longer wipe a bank
+
+### Added
+- `scripts/search_eval.py` (+ `search_eval.example.json`): measures recall quality (hit@1/5/k, MRR) against a golden query set, through the exact recall pipeline the server uses (extracted as `hybrid_search_memories`). This is the yardstick for tuning search parameters — before it, no search change could be shown to help or hurt
+- New offline tests: `test_llm_retry.py`, `test_search_eval.py`, short-CJK rescue and confirm-guard cases
+
+### Fixed
+- `consolidate`, `evaluate_importance`, and `deduplicate` now actually retry transient Gemini failures (5xx/429/network). The 1.2.0 notes claimed all LLM calls retried, but these three fell straight to their fail-open defaults on a single transient error — e.g. a duplicate memory stored because deduplication "failed"
+
 ## [1.2.0] - 2026-07-03
 
 ### Changed

@@ -234,17 +234,23 @@ that triggered them). Shows `Background failures: none recorded` when clean.
 
 Delete all memories and observations. Mental models and bank configuration are preserved. **Irreversible.**
 
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `bank_id` | string | ✅ | Bank to clear |
+Without `confirm=true` nothing is deleted — the call returns a preview of what would be removed. Pass `confirm=true` only after the user has explicitly approved.
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `bank_id` | string | ✅ | — | Bank to clear |
+| `confirm` | bool | ❌ | `false` | Must be `true` to actually delete |
 
 ### `KIROK_delete_bank`
 
 Delete bank + all memories + observations + mental models + bank configuration. **Irreversible.**
 
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `bank_id` | string | ✅ | Bank to delete |
+Without `confirm=true` nothing is deleted — the call returns a preview of what would be removed. Pass `confirm=true` only after the user has explicitly approved.
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `bank_id` | string | ✅ | — | Bank to delete |
+| `confirm` | bool | ❌ | `false` | Must be `true` to actually delete |
 
 ---
 

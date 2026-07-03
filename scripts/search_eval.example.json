@@ -1,0 +1,17 @@
+{
+  "description": "Golden set template for scripts/search_eval.py. Copy this file, replace the cases with real queries against your own banks, and add 30-50 cases for meaningful numbers. A case passes when a returned memory's id is in expected_ids OR its content contains any expected_substrings.",
+  "cases": [
+    {
+      "bank_id": "work-history",
+      "query": "uv sync が失敗する問題の対処",
+      "expected_substrings": ["uv sync"],
+      "note": "Replace with a real query you actually ask, and a substring unique to the memory that should come back."
+    },
+    {
+      "bank_id": "user-prefs",
+      "query": "削除の方針",
+      "expected_ids": ["00000000-0000-0000-0000-000000000000"],
+      "note": "ID matching survives content edits; substring matching survives re-imports. Use whichever is stabler for the case."
+    }
+  ]
+}

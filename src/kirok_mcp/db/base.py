@@ -28,6 +28,18 @@ def _deserialize_vector(blob: bytes) -> list[float]:
 
 _FTS5_OPERATORS = re.compile(r'\b(AND|OR|NOT|NEAR)\b', re.IGNORECASE)
 
+# Kanji (CJK ideographs incl. extension A and compatibility block) and
+# katakana. Deliberately NOT hiragana: hiragana-only short tokens are function
+# words ("koto", "shite") that would substring-match half the bank.
+_CJK_CONTENT_CHAR = re.compile(
+    "["
+    "㐀-䶿"  # CJK extension A
+    "一-鿿"  # CJK unified ideographs
+    "豈-﫿"  # CJK compatibility ideographs
+    "゠-ヿ"  # katakana
+    "]"
+)
+
 
 def _join_json_list(raw: str) -> str:
     """Space-join a JSON array string for FTS indexing, tolerating bad JSON.
@@ -45,6 +57,28 @@ def _join_json_list(raw: str) -> str:
     return ""
 
 
+def _clean_fts_tokens(query: str) -> list[str]:
+    """Strip FTS5 special syntax from a query and split it into plain tokens.
+
+    Shared by ``_sanitize_fts_query`` (tokens the trigram index can match) and
+    ``_short_cjk_fts_tokens`` (tokens it cannot) so both see the exact same
+    tokenization.
+    """
+    if not query or not query.strip():
+        return []
+
+    # Remove FTS5 special characters: *, ^, ", NEAR()
+    cleaned = query.replace('"', ' ').replace('*', ' ').replace('^', ' ')
+    # Replace hyphens with spaces (prevents NOT interpretation)
+    cleaned = cleaned.replace('-', ' ')
+    # Remove parentheses used in NEAR()
+    cleaned = cleaned.replace('(', ' ').replace(')', ' ')
+    # Remove FTS5 operators
+    cleaned = _FTS5_OPERATORS.sub(' ', cleaned)
+
+    return cleaned.split()
+
+
 def _sanitize_fts_query(query: str) -> str | None:
     """Sanitize a query string for safe use with FTS5 MATCH.
 
@@ -56,29 +90,33 @@ def _sanitize_fts_query(query: str) -> str | None:
     Strategy: wrap each token in double quotes to force literal matching.
     Returns None if no valid tokens remain after sanitization.
     """
-    if not query or not query.strip():
-        return None
-
-    # Remove FTS5 special characters: *, ^, ", NEAR()
-    cleaned = query.replace('"', ' ').replace('*', ' ').replace('^', ' ')
-    # Replace hyphens with spaces (prevents NOT interpretation)
-    cleaned = cleaned.replace('-', ' ')
-    # Remove parentheses used in NEAR()
-    cleaned = cleaned.replace('(', ' ').replace(')', ' ')
-    # Remove FTS5 operators
-    cleaned = _FTS5_OPERATORS.sub(' ', cleaned)
-
-    # Split into tokens. The trigram tokenizer indexes 3-character windows, so
-    # tokens shorter than 3 chars can never match — drop them and let semantic
-    # search cover those (e.g. 2-char Japanese words). If nothing remains, return
-    # None so recall falls back to the semantic path (existing behavior).
-    tokens = [t for t in cleaned.split() if len(t) >= 3]
+    # The trigram tokenizer indexes 3-character windows, so tokens shorter
+    # than 3 chars can never MATCH — drop them here. Short kanji/katakana
+    # tokens are rescued by the LIKE supplement in ``fts_search`` (see
+    # ``_short_cjk_fts_tokens``); anything else is left to semantic search.
+    tokens = [t for t in _clean_fts_tokens(query) if len(t) >= 3]
     if not tokens:
         return None
 
     # Double-quote each token for safe literal matching
     quoted = ' '.join(f'"{t}"' for t in tokens)
     return quoted
+
+
+def _short_cjk_fts_tokens(query: str) -> list[str]:
+    """Tokens too short for the trigram FTS index but worth a LIKE rescue.
+
+    Japanese is dense in meaningful 1-2 character words (kanji compounds like
+    "Kyoto"/"kaigi", katakana like "bagu") that the trigram tokenizer can never
+    match, which would silence the keyword half of hybrid search for the
+    language's most common query terms. These tokens are served by an exact
+    substring (LIKE) supplement in ``fts_search`` instead.
+    """
+    return [
+        t
+        for t in _clean_fts_tokens(query)
+        if len(t) < 3 and _CJK_CONTENT_CHAR.search(t)
+    ]
 
 
 def _resolve_db_path(db_path: str | Path | None) -> Path:

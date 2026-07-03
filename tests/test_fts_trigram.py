@@ -61,9 +61,10 @@ class FtsTrigramTest(unittest.TestCase):
         self.assertEqual(
             [r["id"] for r in self.db.fts_search("bank", "開発合宿")], [mid]
         )
+        # 2-char kanji word: below the trigram window, served by the LIKE rescue.
         self.assertEqual(
-            [r["id"] for r in self.db.fts_search("bank", "開催")], []
-        )  # 2 chars: dropped by sanitizer, left to semantic search
+            [r["id"] for r in self.db.fts_search("bank", "開催")], [mid]
+        )
 
     def test_three_char_boundary(self) -> None:
         mid = self.db.insert_memory(
@@ -71,8 +72,59 @@ class FtsTrigramTest(unittest.TestCase):
         )
         # 3 chars: tokenized and matchable.
         self.assertEqual([r["id"] for r in self.db.fts_search("bank", "東京都")], [mid])
-        # 2 chars: dropped by the sanitizer (trigram cannot index < 3 chars).
-        self.assertEqual(self.db.fts_search("bank", "東京"), [])
+        # 2 chars: trigram cannot index it, but the LIKE rescue still finds it.
+        self.assertEqual([r["id"] for r in self.db.fts_search("bank", "東京")], [mid])
+
+    def test_short_cjk_like_rescue(self) -> None:
+        """Short kanji/katakana queries must not silence keyword search.
+
+        WHY: Japanese is dense in meaningful 2-char words (京都, 会議, バグ) that
+        the trigram tokenizer can never MATCH. Without the LIKE rescue, hybrid
+        search silently degrades to semantic-only for the language's most
+        common query terms.
+        """
+        kyoto = self.db.insert_memory(
+            "bank", "京都で紅葉を見た。", embedding=[1.0, 0.0]
+        )
+        bug = self.db.insert_memory(
+            "bank", "ログインのバグを直した。", embedding=[1.0, 0.0]
+        )
+
+        # 2-char kanji and katakana queries hit via LIKE.
+        self.assertEqual([r["id"] for r in self.db.fts_search("bank", "京都")], [kyoto])
+        self.assertEqual([r["id"] for r in self.db.fts_search("bank", "バグ")], [bug])
+
+        # Hiragana-only short tokens stay dropped (function-word noise).
+        self.assertEqual(self.db.fts_search("bank", "こと"), [])
+
+        # Entities/keywords participate in the rescue like they do in FTS.
+        tagged = self.db.insert_memory(
+            "bank",
+            "面白い店を見つけた。",
+            embedding=[1.0, 0.0],
+            keywords=["餃子"],
+        )
+        self.assertEqual(
+            [r["id"] for r in self.db.fts_search("bank", "餃子")], [tagged]
+        )
+
+    def test_like_rescue_ranks_after_fts_hits(self) -> None:
+        # Memory A matches the 3-char FTS token, memory B only the 2-char one.
+        fts_hit = self.db.insert_memory(
+            "bank", "来週の開発合宿は箱根で開催します。", embedding=[1.0, 0.0]
+        )
+        like_hit = self.db.insert_memory(
+            "bank", "京都で紅葉を見た。", embedding=[1.0, 0.0]
+        )
+
+        ids = [r["id"] for r in self.db.fts_search("bank", "開発合宿 京都")]
+        # BM25-ranked FTS hits come first; LIKE rescues are appended after.
+        self.assertEqual(ids, [fts_hit, like_hit])
+
+    def test_like_rescue_escapes_sql_wildcards(self) -> None:
+        self.db.insert_memory("bank", "京都で紅葉を見た。", embedding=[1.0, 0.0])
+        # '_' would match any character if unescaped; '京_' must NOT match '京都'.
+        self.assertEqual(self.db.fts_search("bank", "京_"), [])
 
     def test_english_query_regression_and_case_folding(self) -> None:
         mid = self.db.insert_memory(

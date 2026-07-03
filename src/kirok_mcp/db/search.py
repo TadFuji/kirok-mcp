@@ -10,6 +10,7 @@ from kirok_mcp.db.base import (
     _deserialize_vector,
     _sanitize_fts_query,
     _serialize_vector,
+    _short_cjk_fts_tokens,
 )
 from kirok_mcp.embeddings import EMBEDDING_DIM, semantic_search
 
@@ -30,27 +31,90 @@ class SearchMixin:
         names, etc.). If sanitization leaves no valid tokens, or if the
         FTS5 query still fails, returns an empty list gracefully —
         semantic search will still provide results via RRF.
+
+        Short kanji/katakana tokens (1-2 chars) can never MATCH the trigram
+        index, so they are served by an exact-substring LIKE supplement
+        instead: those rows are appended after the BM25-ranked FTS hits (and
+        so rank below them in RRF), newest first.
         """
         assert self.conn is not None
 
+        results: list[dict[str, Any]] = []
+
         safe_query = _sanitize_fts_query(query)
-        if safe_query is None:
-            return []
+        if safe_query is not None:
+            try:
+                rows = self.conn.execute(
+                    """SELECT fts.id, fts.content, bm25(fts_memories) AS score
+                       FROM fts_memories fts
+                       WHERE fts_memories MATCH ? AND fts.bank_id = ?
+                       ORDER BY score
+                       LIMIT ?""",
+                    (safe_query, bank_id, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # FTS5 parse error — treat as no FTS hits (the LIKE supplement
+                # below and semantic search still work)
+                rows = []
+            results = [
+                {"id": r["id"], "content": r["content"], "score": r["score"]}
+                for r in rows
+            ]
 
-        try:
-            rows = self.conn.execute(
-                """SELECT fts.id, fts.content, bm25(fts_memories) AS score
-                   FROM fts_memories fts
-                   WHERE fts_memories MATCH ? AND fts.bank_id = ?
-                   ORDER BY score
-                   LIMIT ?""",
-                (safe_query, bank_id, limit),
-            ).fetchall()
-        except sqlite3.OperationalError:
-            # FTS5 parse error — fall back to empty (semantic search still works)
-            return []
+        short_tokens = _short_cjk_fts_tokens(query)
+        if short_tokens and len(results) < limit:
+            seen = {r["id"] for r in results}
+            for row in self._short_token_like_search(bank_id, short_tokens, limit):
+                if row["id"] in seen:
+                    continue
+                results.append(row)
+                if len(results) >= limit:
+                    break
 
-        return [{"id": r["id"], "content": r["content"], "score": r["score"]} for r in rows]
+        return results
+
+    def _short_token_like_search(
+        self, bank_id: str, tokens: list[str], limit: int
+    ) -> list[dict[str, Any]]:
+        """Exact substring search for tokens the trigram index cannot serve.
+
+        A row must contain ALL tokens (mirroring FTS5's implicit AND across
+        quoted tokens) in its content, entities, or keywords. Matching runs
+        against fts_memories rather than memories because the source table
+        stores entities/keywords as ASCII-escaped JSON (json.dumps default),
+        where a CJK substring can never match; the FTS table holds the same
+        text space-joined in plain form and is kept in sync by every write
+        path. No BM25 score is available, so rows are ordered newest first and
+        returned with score 0.0 (BM25 scores are negative = better, so these
+        naturally sort last).
+        """
+        assert self.conn is not None
+
+        conditions = ["m.bank_id = ?"]
+        params: list[Any] = [bank_id]
+        for token in tokens:
+            pattern = "%" + (
+                token.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+            ) + "%"
+            conditions.append(
+                r"(f.content LIKE ? ESCAPE '\' "
+                r"OR f.entities LIKE ? ESCAPE '\' "
+                r"OR f.keywords LIKE ? ESCAPE '\')"
+            )
+            params.extend([pattern, pattern, pattern])
+        params.append(limit)
+
+        rows = self.conn.execute(
+            f"""SELECT m.id, m.content
+                FROM memories m
+                JOIN fts_memories f ON f.id = m.id
+                WHERE {' AND '.join(conditions)}
+                ORDER BY m.timestamp DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+
+        return [{"id": r["id"], "content": r["content"], "score": 0.0} for r in rows]
 
     def get_all_embeddings(self, bank_id: str) -> list[dict[str, Any]]:
         """Load all embeddings for a bank (for brute-force cosine similarity)."""

@@ -247,9 +247,12 @@ If no observations should be created, updated, or deleted, return an empty array
 Respond with ONLY valid JSON, no markdown formatting, no explanation."""
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=LLM_MODEL,
-                contents=prompt,
+            response = await with_retry(
+                lambda: self.client.aio.models.generate_content(
+                    model=LLM_MODEL,
+                    contents=prompt,
+                ),
+                logger=logger,
             )
 
             result = _parse_json_response(response.text)
@@ -339,9 +342,12 @@ Return a JSON object with:
 Respond with ONLY valid JSON, no markdown formatting, no explanation."""
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=LLM_MODEL,
-                contents=prompt,
+            response = await with_retry(
+                lambda: self.client.aio.models.generate_content(
+                    model=LLM_MODEL,
+                    contents=prompt,
+                ),
+                logger=logger,
             )
 
             result = _parse_json_response(response.text)
@@ -431,9 +437,12 @@ Return a JSON object with:
 Respond with ONLY valid JSON, no markdown formatting, no explanation."""
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=LLM_MODEL,
-                contents=prompt,
+            response = await with_retry(
+                lambda: self.client.aio.models.generate_content(
+                    model=LLM_MODEL,
+                    contents=prompt,
+                ),
+                logger=logger,
             )
 
             result = _parse_json_response(response.text)

@@ -593,5 +593,80 @@ class RetainDedupTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(db.insert_calls), 1)
 
 
+class _FakeDestructiveDB:
+    """Records destructive calls; provides counts for the confirmation preview."""
+
+    def __init__(self):
+        self.clear_calls = []
+        self.delete_calls = []
+
+    def get_stats(self, bank_id: str) -> dict:
+        return {
+            "bank_id": bank_id,
+            "memory_count": 12,
+            "mental_model_count": 2,
+            "observations_count": 4,
+            "unconsolidated_count": 0,
+        }
+
+    def clear_bank(self, bank_id: str) -> dict:
+        self.clear_calls.append(bank_id)
+        return {"memories_deleted": 12, "observations_deleted": 4}
+
+    def delete_bank(self, bank_id: str) -> dict:
+        self.delete_calls.append(bank_id)
+        return {
+            "memories_deleted": 12,
+            "observations_deleted": 4,
+            "models_deleted": 2,
+            "config_deleted": True,
+        }
+
+
+class DestructiveConfirmTest(unittest.IsolatedAsyncioTestCase):
+    """clear_bank / delete_bank require confirm=true.
+
+    WHY: these tools erase whole banks irreversibly, and an LLM can call them
+    by mistake. The default call must be a harmless preview so a single wrong
+    tool call can never wipe a bank.
+    """
+
+    def setUp(self) -> None:
+        self.original_db = server._db
+        self.db = _FakeDestructiveDB()
+        server._db = self.db
+
+    def tearDown(self) -> None:
+        server._db = self.original_db
+
+    async def test_clear_bank_without_confirm_changes_nothing(self) -> None:
+        result = await server.KIROK_clear_bank(bank_id="user-prefs")
+
+        self.assertIn("NOT cleared", result)
+        self.assertIn("confirm=true", result)
+        self.assertIn("Memories: 12", result)  # preview shows what's at stake
+        self.assertEqual(self.db.clear_calls, [])
+
+    async def test_clear_bank_with_confirm_deletes(self) -> None:
+        result = await server.KIROK_clear_bank(bank_id="user-prefs", confirm=True)
+
+        self.assertIn("Cleared bank 'user-prefs'", result)
+        self.assertEqual(self.db.clear_calls, ["user-prefs"])
+
+    async def test_delete_bank_without_confirm_changes_nothing(self) -> None:
+        result = await server.KIROK_delete_bank(bank_id="user-prefs")
+
+        self.assertIn("NOT deleted", result)
+        self.assertIn("confirm=true", result)
+        self.assertIn("Mental models: 2", result)
+        self.assertEqual(self.db.delete_calls, [])
+
+    async def test_delete_bank_with_confirm_deletes(self) -> None:
+        result = await server.KIROK_delete_bank(bank_id="user-prefs", confirm=True)
+
+        self.assertIn("Bank 'user-prefs' deleted", result)
+        self.assertEqual(self.db.delete_calls, ["user-prefs"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -39,7 +39,11 @@ is unchanged (`from kirok_mcp.db import MemoryDB`). Key design decisions:
 - **Binary BLOB storage** for embedding vectors (packed float32 arrays)
 - **FTS5 virtual tables** for keyword search with BM25 ranking, using the
   `trigram` tokenizer so Japanese/CJK substring matching works (the default
-  tokenizer splits CJK into single characters, leaving BM25 ineffective)
+  tokenizer splits CJK into single characters, leaving BM25 ineffective).
+  1-2 character kanji/katakana query tokens — below the trigram window, and
+  extremely common in Japanese (京都, 会議, バグ) — are served by an
+  exact-substring LIKE supplement over the FTS text, appended after the
+  BM25-ranked hits
 - **Automatic schema migration** for forward compatibility (including rebuilding
   the FTS index with the trigram tokenizer for pre-existing databases)
 

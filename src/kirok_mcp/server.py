@@ -439,6 +439,52 @@ async def KIROK_smart_retain(
 
 # ── Tool: Recall ──────────────────────────────────────────────────────
 
+async def hybrid_search_memories(
+    db,
+    embedder,
+    bank_id: str,
+    query: str,
+    limit: int,
+    time_min: str = "",
+    time_max: str = "",
+    *,
+    query_embedding: list[float] | None = None,
+) -> list[dict]:
+    """Semantic + keyword memory search merged with RRF.
+
+    This is the exact memory-search pipeline KIROK_recall uses, extracted so
+    scripts/search_eval.py can measure the real recall path instead of a copy
+    that would drift. Takes db/embedder as arguments (not the module globals)
+    so callers outside the running server can supply their own clients.
+    ``query_embedding`` lets a caller that already embedded the query (recall
+    reuses it for observation search) avoid a second API call.
+    """
+    if query_embedding is None:
+        query_embedding = await embedder.embed(query, task_type=TASK_TYPE_QUERY)
+
+    # Time-filtered recall stays on the brute-force path (vec0 cannot filter by
+    # timestamp); otherwise use the fast vec_search KNN.
+    if time_min or time_max:
+        filtered = db.get_embeddings_in_range(
+            bank_id, time_min=time_min or None, time_max=time_max or None
+        )
+        semantic_results = semantic_search(query_embedding, filtered, top_k=limit)
+    else:
+        semantic_results = db.vec_search(query_embedding, bank_id, top_k=limit)
+
+    fts_results = db.fts_search(bank_id, query, limit=limit)
+    # Apply time filtering to FTS results as well
+    if time_min or time_max:
+        time_mems = db.search_by_timestamp(
+            bank_id, time_min=time_min or None, time_max=time_max or None, limit=limit * 2
+        )
+        time_ids = {m["id"] for m in time_mems}
+        fts_results = [r for r in fts_results if r["id"] in time_ids]
+
+    merged = reciprocal_rank_fusion(semantic_results, fts_results, k=60)
+    return merged[:limit]
+
+
 @mcp.tool()
 async def KIROK_recall(
     bank_id: str,
@@ -468,28 +514,16 @@ async def KIROK_recall(
         return "Error: query must not be empty. Please provide a search term."
 
     query_embedding = await _embedder.embed(query, task_type=TASK_TYPE_QUERY)
-
-    # Time-filtered recall stays on the brute-force path (vec0 cannot filter by
-    # timestamp); otherwise use the fast vec_search KNN.
-    if time_min or time_max:
-        filtered = _db.get_embeddings_in_range(
-            bank_id, time_min=time_min or None, time_max=time_max or None
-        )
-        semantic_results = semantic_search(query_embedding, filtered, top_k=limit)
-    else:
-        semantic_results = _db.vec_search(query_embedding, bank_id, top_k=limit)
-
-    fts_results = _db.fts_search(bank_id, query, limit=limit)
-    # Apply time filtering to FTS results as well
-    if time_min or time_max:
-        time_mems = _db.search_by_timestamp(
-            bank_id, time_min=time_min or None, time_max=time_max or None, limit=limit * 2
-        )
-        time_ids = {m["id"] for m in time_mems}
-        fts_results = [r for r in fts_results if r["id"] in time_ids]
-
-    merged = reciprocal_rank_fusion(semantic_results, fts_results, k=60)
-    top_results = merged[:limit]
+    top_results = await hybrid_search_memories(
+        _db,
+        _embedder,
+        bank_id,
+        query,
+        limit,
+        time_min=time_min,
+        time_max=time_max,
+        query_embedding=query_embedding,
+    )
 
     # ── Observation-first display (inspired by Mem0 knowledge layer) ──
     # vec_search_observations falls back to brute force internally, so the 0.4
@@ -878,13 +912,29 @@ async def KIROK_update_memory(
 # ── Tool: Clear Bank ──────────────────────────────────────────────────
 
 @mcp.tool()
-async def KIROK_clear_bank(bank_id: str) -> str:
+async def KIROK_clear_bank(bank_id: str, confirm: bool = False) -> str:
     """Delete ALL memories and observations in a bank, keeping the bank itself.
     Mental models are preserved. This is destructive and cannot be undone.
 
+    Without confirm=true this makes NO changes and returns a preview of what
+    would be deleted. Only pass confirm=true after the user has explicitly
+    approved deleting this specific bank's contents.
+
     Args:
         bank_id: Bank to clear.
+        confirm: Must be true to actually delete. Defaults to false (preview).
     """
+    if not confirm:
+        stats = _db.get_stats(bank_id)
+        return (
+            f"NOT cleared — confirmation required.\n"
+            f"This would permanently delete from bank '{bank_id}':\n"
+            f"- Memories: {stats['memory_count']}\n"
+            f"- Observations: {stats['observations_count']}\n"
+            f"Nothing was changed. If the user explicitly approved this, "
+            f"call again with confirm=true.\n"
+        )
+
     result = _db.clear_bank(bank_id)
     return (
         f"Cleared bank '{bank_id}'.\n"
@@ -897,13 +947,30 @@ async def KIROK_clear_bank(bank_id: str) -> str:
 # ── Tool: Delete Bank ─────────────────────────────────────────────────
 
 @mcp.tool()
-async def KIROK_delete_bank(bank_id: str) -> str:
+async def KIROK_delete_bank(bank_id: str, confirm: bool = False) -> str:
     """Permanently delete a bank and ALL its memories, observations, models, and config.
     This is destructive and cannot be undone.
 
+    Without confirm=true this makes NO changes and returns a preview of what
+    would be deleted. Only pass confirm=true after the user has explicitly
+    approved deleting this specific bank.
+
     Args:
         bank_id: Bank to delete entirely.
+        confirm: Must be true to actually delete. Defaults to false (preview).
     """
+    if not confirm:
+        stats = _db.get_stats(bank_id)
+        return (
+            f"NOT deleted — confirmation required.\n"
+            f"This would permanently delete bank '{bank_id}' and all its data:\n"
+            f"- Memories: {stats['memory_count']}\n"
+            f"- Observations: {stats['observations_count']}\n"
+            f"- Mental models: {stats['mental_model_count']}\n"
+            f"Nothing was changed. If the user explicitly approved this, "
+            f"call again with confirm=true.\n"
+        )
+
     result = _db.delete_bank(bank_id)
     return (
         f"Bank '{bank_id}' deleted.\n"
