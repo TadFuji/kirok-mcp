@@ -38,6 +38,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/TadFuji/kirok-mcp"
 Repository = "https://github.com/TadFuji/kirok-mcp"
+Changelog = "https://github.com/TadFuji/kirok-mcp/blob/main/CHANGELOG.md"
 Issues = "https://github.com/TadFuji/kirok-mcp/issues"
 
 [project.scripts]

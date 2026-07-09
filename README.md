@@ -1,754 +1,230 @@
-<div align="center">
+# Kirok
 
-# 📝 Kirok
+English | [日本語](README.ja.md)
 
-**Persistent Memory for AI Agents**
-
-*Retain knowledge. Recall with precision. Reflect for deeper insights.*
-
+[![tests](https://github.com/TadFuji/kirok-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/TadFuji/kirok-mcp/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org)
-[![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
+[![Version 1.3.0](https://img.shields.io/badge/version-1.3.0-blue.svg)](CHANGELOG.md)
 
-🇬🇧 English | **[🇯🇵 日本語はこちら](docs/README_ja.md)**
+**Persistent memory for AI agents, over MCP.** Kirok (記録, "record") is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives an agent a durable, searchable memory: **Retain** what matters, **Recall** it with hybrid semantic + keyword search, and **Reflect** to distil accumulated memories into reusable insights. A background consolidation loop turns raw memories into higher-level *observations* on its own.
 
-</div>
+## Why Kirok
 
----
+Most "agent memory" is either a flat vector store (recall is a bare cosine top-k, no keyword grounding, no forgetting) or a pile of markdown the agent has to re-read every turn. Kirok is a small, self-hostable server that does the retrieval engineering properly:
 
-Kirok (記録, "record" in Japanese) is a **Model Context Protocol (MCP) server** that gives AI agents persistent, searchable memory. Without Kirok, your AI assistant forgets everything when you start a new conversation. With Kirok, it remembers your preferences, past decisions, lessons learned, and can even generate insights from accumulated knowledge.
+- **Hybrid retrieval, not just vectors.** Semantic KNN and FTS5 BM25 are fused with Reciprocal Rank Fusion, so an exact keyword match and a semantic match reinforce each other instead of competing.
+- **A calibrated relevance floor.** Naive cosine thresholds don't work on real embedding distributions (see [Search quality](#-search-quality)); Kirok's floor is measured against live data, and there's an evaluation harness to keep it honest.
+- **Autonomous consolidation.** Memories are periodically synthesised into observations, and destructive LLM decisions are soft-deleted with an audit trail rather than executed blindly.
+- **Reliability first.** Atomic writes, soft deletes, startup auto-snapshots, and a fail-open background pipeline that never loses a `retain`.
 
-## ✨ What Can Kirok Do?
+**Not local-first:** storage is a local SQLite file you own, but embedding and LLM inference are sent to Google's Gemini API. If everything must stay on-device, Kirok is not for you (yet).
 
-| Feature | What It Means |
-|---------|---------------|
-| **🧠 Retain** | Your AI stores information and automatically extracts key details |
-| **🔍 Recall** | Your AI searches past memories using both meaning and keywords |
-| **💡 Reflect** | Your AI analyzes accumulated memories to generate insights |
-| **🔄 Smart Dedup** | Automatically avoids storing duplicate information |
-| **📊 Observations** | Detects patterns across your memories over time |
-| **🎯 Bank Missions** | Customize what each memory bank focuses on |
+## Architecture
 
----
+```mermaid
+flowchart TB
+    client["MCP Client<br/>(Claude Desktop / Claude Code / Cursor / …)"]
+    subgraph server["Kirok MCP Server (FastMCP)"]
+        direction TB
+        tools["19 MCP tools<br/>Retain · Recall · Reflect · consolidate · CRUD"]
+        pipeline["Hybrid search (RRF) · Smart dedup<br/>Consolidation · Auto-refresh"]
+    end
+    subgraph storage["Local SQLite (WAL)"]
+        direction LR
+        fts["FTS5 trigram<br/>(BM25 keyword)"]
+        vec["sqlite-vec<br/>(KNN, brute-force fallback)"]
+        tables["memories · observations<br/>mental_models · banks · system_events"]
+    end
+    gemini["Google Gemini API<br/>gemini-embedding-001 (3072-d)<br/>gemini-2.5-flash-lite"]
 
-## 🎁 Bonus: Core "Kirok" Agent Skill Included
+    client <-->|"stdio (JSON-RPC 2.0)"| tools
+    tools --> pipeline
+    pipeline <--> storage
+    pipeline <-->|embeddings · entity extraction<br/>reflection · consolidation| gemini
+```
 
-To help your AI understand and use its new memory capabilities automatically, we've bundled the core **"kirok" Agent Skill** inside the `skills/` directory.
+Storage is a single SQLite database at `~/.kirok/memory.db`. `sqlite-vec` provides per-bank vector KNN; if the native extension can't load, Kirok falls back to a NumPy brute-force scan with identical results. See [docs/architecture.md](docs/architecture.md) for the full design.
 
-- `kirok`: Teaches the AI how to use Kirok's memory mechanics effectively. Instead of having to tell the AI "remember this", the AI will automatically know when and how to store context.
+## 🚀 Quick start
 
-**How to use (Quick Start)**:
-1. Copy the `skills` folder into your working directory.
-2. In your very first chat, just tell the AI: **"Please read `skills/kirok/SKILL.md` and follow its instructions."**
-*(Pro Tip: You can add this sentence to your Custom Instructions / System Prompt so the AI reads it automatically every time you start a new conversation!)*
-
----
-
-## 🚀 Getting Started (Step by Step)
-
-Follow these steps in order. Estimated time: **10–15 minutes**.
-
-### Step 1: Install Python 3.12+
-
-Kirok requires Python 3.12 or newer.
-
-<details>
-<summary><b>🍎 Mac</b></summary>
-
-The easiest way is using [Homebrew](https://brew.sh/):
+**Requirements:** Python 3.12+, [uv](https://docs.astral.sh/uv/), and a [Gemini API key](https://aistudio.google.com/apikey) (free tier is plenty).
 
 ```bash
-# Install Homebrew (if you don't have it)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install Python
-brew install python@3.12
-```
-
-Verify the installation:
-```bash
-python3 --version
-# Should show: Python 3.12.x or newer
-```
-
-</details>
-
-<details>
-<summary><b>🪟 Windows</b></summary>
-
-1. Go to [python.org/downloads](https://www.python.org/downloads/)
-2. Download the latest Python 3.12+ installer
-3. **Important**: Check the box ✅ **"Add Python to PATH"** during installation
-4. Click "Install Now"
-
-Verify the installation by opening **PowerShell** and running:
-```powershell
-python --version
-# Should show: Python 3.12.x or newer
-```
-
-</details>
-
-### Step 2: Install uv (Python Package Manager)
-
-[uv](https://docs.astral.sh/uv/) is a fast Python package manager that Kirok uses.
-
-<details>
-<summary><b>🍎 Mac</b></summary>
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-Then restart your terminal, and verify:
-```bash
-uv --version
-```
-
-</details>
-
-<details>
-<summary><b>🪟 Windows</b></summary>
-
-Open **PowerShell** and run:
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-Then **close and reopen PowerShell**, and verify:
-```powershell
-uv --version
-```
-
-</details>
-
-### Step 3: Get a Gemini API Key (Free)
-
-Kirok uses Google's Gemini AI for understanding and searching your memories. The free tier is more than enough for personal use.
-
-1. Go to **[Google AI Studio](https://aistudio.google.com/apikey)**
-2. Sign in with your Google account
-3. Click **"Create API Key"**
-4. Copy the key (it starts with `AIza...`) — you'll need it in Step 5
-
-> **💡 Tip**: The free tier allows 1,500 requests per day — plenty for normal use.
-
-### Step 4: Download and Install Kirok
-
-<details>
-<summary><b>🍎 Mac</b></summary>
-
-```bash
-# Choose where to install (e.g., your home directory)
-cd ~
-
-# Download Kirok
 git clone https://github.com/TadFuji/kirok-mcp.git
 cd kirok-mcp
-
-# Install dependencies
-uv sync
+uv sync                       # installs deps, including sqlite-vec
+cp .env.example .env          # then put your key in it: GEMINI_API_KEY=AIza...
+uv run kirok-doctor           # offline sanity check of the whole setup
 ```
 
-</details>
+### Connect an MCP client
 
-<details>
-<summary><b>🪟 Windows</b></summary>
+**Claude Desktop** — edit `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`):
 
-```powershell
-# Choose where to install (e.g., your Desktop)
-cd $env:USERPROFILE\Desktop
-
-# Download Kirok
-git clone https://github.com/TadFuji/kirok-mcp.git
-cd kirok-mcp
-
-# Install dependencies
-uv sync
+```json
+{
+  "mcpServers": {
+    "kirok": {
+      "command": "uv",
+      "args": ["run", "--directory", "/absolute/path/to/kirok-mcp", "kirok-mcp"]
+    }
+  }
+}
 ```
 
-> **Don't have Git?** Download it from [git-scm.com](https://git-scm.com/download/win) first.  
-> Alternatively, download Kirok as a ZIP from the [GitHub page](https://github.com/TadFuji/kirok-mcp) → green "Code" button → "Download ZIP", then unzip it.
-
-</details>
-
-> **Note**: `uv sync` also installs `sqlite-vec`, which speeds up memory search.
-> If the native extension can't load on your platform, Kirok automatically falls
-> back to built-in brute-force search — same results, just slower.
-
-### Step 5: Configure Your API Key
-
-<details>
-<summary><b>🍎 Mac</b></summary>
+**Claude Code CLI:**
 
 ```bash
-cp .env.example .env
+claude mcp add kirok -s user -- uv run --directory /absolute/path/to/kirok-mcp kirok-mcp
 ```
 
-Open the `.env` file in any text editor and replace `your-api-key-here` with the API key you copied in Step 3:
+Then restart the client. `GEMINI_API_KEY` is read from `.env`, so it need not go in the config.
 
-```
-GEMINI_API_KEY=AIzaSy...your-key-here...
-```
+> [!TIP]
+> **If `uv run` fails to launch the server** (common on Windows or cloud-synced folders — `uv run` re-syncs on every launch and can hit locked `.venv` files or an in-use entry-point `.exe`), invoke the venv's Python directly to skip the sync entirely:
+>
+> ```json
+> {
+>   "mcpServers": {
+>     "kirok": {
+>       "command": "/absolute/path/to/kirok-mcp/.venv/bin/python",
+>       "args": ["-m", "kirok_mcp.server"],
+>       "env": { "PYTHONPATH": "/absolute/path/to/kirok-mcp/src" }
+>     }
+>   }
+> }
+> ```
+>
+> On Windows use `.venv\\Scripts\\python.exe` and double-backslash paths in JSON.
 
-</details>
+A bundled agent skill in [`skills/kirok/`](skills/kirok/) teaches the agent when and how to use the memory tools on its own — point your client at `skills/kirok/SKILL.md` to enable it.
 
-<details>
-<summary><b>🪟 Windows</b></summary>
+## 🛠️ Tools
 
-```powershell
-Copy-Item .env.example .env
-```
+19 MCP tools. One-line summaries below; full parameter tables in [docs/tools-reference.md](docs/tools-reference.md).
 
-Open the `.env` file in Notepad (or any text editor) and replace `your-api-key-here` with the API key you copied in Step 3:
+**Core**
 
-```
-GEMINI_API_KEY=AIzaSy...your-key-here...
-```
+| Tool | Purpose |
+|------|---------|
+| `KIROK_retain` | Store a memory: entity/keyword extraction + embedding + smart ADD/UPDATE/NOOP dedup |
+| `KIROK_recall` | Hybrid semantic + keyword search (RRF), observations shown first |
+| `KIROK_reflect` | Synthesise memories into a mental model (insight), optionally auto-refreshing |
+| `KIROK_smart_retain` | Score importance (1–10) first, then retain only if it clears a threshold |
+| `KIROK_consolidate` | Manually run observation consolidation for a bank |
 
-</details>
+**Memory management**
 
-### Step 6: Connect to Claude Desktop
+| Tool | Purpose |
+|------|---------|
+| `KIROK_get_memory` / `KIROK_list_memories` | Fetch one memory / browse a bank with pagination |
+| `KIROK_update_memory` | Edit content or context (re-extracts and re-embeds on content change) |
+| `KIROK_forget` | Delete a single memory (irreversible) |
 
-Now connect Kirok to your AI client. The most common setup is **Claude Desktop**.
+**Mental models**
 
-#### Find the config file
-
-| OS | Config file location |
-|----|---------------------|
-| 🍎 Mac | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| 🪟 Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
-
-> **💡 How to open the config file**:
-> In Claude Desktop, go to **Settings** (gear icon) → **Developer** → **Edit Config**.
-> If the option doesn't appear, create the file manually at the path above.
-
-#### Add Kirok to the config
-
-Open the config file and add the Kirok server. **Replace `/path/to/kirok-mcp` with the actual folder path** where you installed Kirok.
-
-<details>
-<summary><b>🍎 Mac example</b></summary>
-
-```json
-{
-  "mcpServers": {
-    "kirok": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory", "/Users/yourname/kirok-mcp",
-        "kirok-mcp"
-      ]
-    }
-  }
-}
-```
-
-> Replace `/Users/yourname/kirok-mcp` with your actual path.
-
-</details>
-
-<details>
-<summary><b>🪟 Windows example</b></summary>
-
-```json
-{
-  "mcpServers": {
-    "kirok": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory", "C:\\Users\\YourName\\Desktop\\kirok-mcp",
-        "kirok-mcp"
-      ]
-    }
-  }
-}
-```
-
-> Replace `C:\\Users\\YourName\\Desktop\\kirok-mcp` with your actual path.  
-> **Important**: Use double backslashes `\\` in JSON on Windows.
-
-</details>
-
-<details>
-<summary><b>📌 Already have other MCP servers?</b></summary>
-
-If your config file already has other servers, just add the `kirok` entry inside the existing `mcpServers` object:
-
-```json
-{
-  "mcpServers": {
-    "existing-server": {
-      "...": "..."
-    },
-    "kirok": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory", "/path/to/kirok-mcp",
-        "kirok-mcp"
-      ]
-    }
-  }
-}
-```
-
-</details>
-
-#### Restart Claude Desktop
-
-After saving the config file, **completely quit and restart Claude Desktop**. Kirok should now appear in the MCP tools list.
-
-### Step 7: Verify It Works
-
-In a new Claude Desktop conversation, try asking:
-
-> "Use Kirok to remember that my favorite programming language is Python."
-
-Claude should use the `KIROK_retain` tool to store this memory. Then in a **new conversation**, ask:
-
-> "What's my favorite programming language?"
-
-If Claude recalls "Python" using `KIROK_recall`, everything is working! 🎉
-
----
-
-## 🔧 Other MCP Clients
-
-<details>
-<summary><b>Gemini CLI / Antigravity</b></summary>
-
-Add to your `mcp_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "kirok": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory", "/path/to/kirok-mcp",
-        "kirok-mcp"
-      ]
-    }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><b>VS Code / Cursor</b></summary>
-
-Add to your workspace or user MCP settings (`.vscode/mcp.json` or VS Code settings):
-
-```json
-{
-  "mcpServers": {
-    "kirok": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory", "/path/to/kirok-mcp",
-        "kirok-mcp"
-      ]
-    }
-  }
-}
-```
-
-</details>
-
----
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│                  MCP Client                      │
-│       (Claude Desktop, Cursor, etc.)             │
-└──────────────────────┬──────────────────────────┘
-                       │ MCP Protocol (stdio)
-┌──────────────────────▼──────────────────────────┐
-│              Kirok MCP Server                    │
-│  ┌───────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │  19 Tools │  │ LLM      │  │ Embedding    │  │
-│  │  (CRUD)   │  │ Client   │  │ Client       │  │
-│  └─────┬─────┘  └────┬─────┘  └──────┬───────┘  │
-│        │             │               │           │
-│  ┌─────▼─────────────▼───────────────▼───────┐   │
-│  │         SQLite + FTS5 + sqlite-vec         │   │
-│  │  memories │ models │ observations │ config │   │
-│  └────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────┘
-                       │
-          ┌────────────▼────────────┐
-          │    Google Gemini API    │
-          │  gemini-embedding-001   │
-          │  gemini-2.5-flash-lite  │
-          └─────────────────────────┘
-```
-
-## 📖 Tools Reference
-
-Kirok provides **19 MCP tools** organized into five categories:
-
-### Core Operations
-
-| Tool | Description |
-|------|-------------|
-| `KIROK_retain` | Store a memory with automatic entity extraction, embedding, and smart deduplication |
-| `KIROK_recall` | Search memories using hybrid semantic + keyword search with RRF |
-| `KIROK_reflect` | Generate insights from accumulated memories, saved as optionally auto-refreshing mental models |
-| `KIROK_smart_retain` | Score content importance before running the full retain pipeline — ideal for bulk ingestion |
-| `KIROK_consolidate` | Manually trigger observation consolidation |
-
-### Memory Management
-
-| Tool | Description |
-|------|-------------|
-| `KIROK_get_memory` | Get full details of a specific memory |
-| `KIROK_update_memory` | Update content/context of an existing memory |
-| `KIROK_forget` | Delete a specific memory (irreversible) |
-| `KIROK_list_memories` | Browse memories with pagination |
-
-### Mental Models
-
-| Tool | Description |
-|------|-------------|
-| `KIROK_list_mental_models` | List insights generated by Reflect |
-| `KIROK_get_mental_model` | Get full details of a mental model |
+| Tool | Purpose |
+|------|---------|
+| `KIROK_list_mental_models` / `KIROK_get_mental_model` | List / inspect insights from Reflect |
+| `KIROK_refresh_mental_model` | Re-analyse against current memories |
 | `KIROK_delete_mental_model` | Delete a mental model (irreversible) |
-| `KIROK_refresh_mental_model` | Re-analyze with latest memories |
 
-### Bank Management
+**Banks**
 
-| Tool | Description |
-|------|-------------|
-| `KIROK_list_banks` | List all memory banks with counts |
-| `KIROK_stats` | Get detailed statistics for a bank |
-| `KIROK_clear_bank` | Delete all memories and observations in a bank |
-| `KIROK_delete_bank` | Permanently delete a bank and all its data |
+| Tool | Purpose |
+|------|---------|
+| `KIROK_list_banks` / `KIROK_stats` | List banks with counts / detailed per-bank stats incl. background failures |
+| `KIROK_clear_bank` | Delete a bank's memories + observations (requires `confirm=true`; previews otherwise) |
+| `KIROK_delete_bank` | Delete a bank entirely (requires `confirm=true`; previews otherwise) |
 
-### Configuration
+**Config**
 
-| Tool | Description |
-|------|-------------|
-| `KIROK_set_bank_config` | Set retain/observations missions for a bank |
-| `KIROK_get_bank_config` | View current bank configuration |
+| Tool | Purpose |
+|------|---------|
+| `KIROK_set_bank_config` / `KIROK_get_bank_config` | Set / view a bank's retain & observation "missions" (what to focus on) |
 
 ## ⚙️ Configuration
 
-All configuration is via environment variables in the `.env` file:
+Everything is set via environment variables (typically in `.env`). Only `GEMINI_API_KEY` is required.
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `GEMINI_API_KEY` | ✅ | — | Google Gemini API key ([get one free](https://aistudio.google.com/apikey)) |
-| `KIROK_DB_PATH` | ❌ | `~/.kirok/memory.db` | Custom database path |
-| `KIROK_DEDUP_THRESHOLD` | ❌ | `0.85` | Similarity threshold for deduplication (0.0–1.0) |
-| `KIROK_REFLECT_TIMEOUT` | ❌ | `300` | Timeout in seconds for reflect operations |
-| `KIROK_CONSOLIDATION_TIMEOUT` | ❌ | `120` | Timeout in seconds for consolidation |
-| `KIROK_CONSOLIDATION_BATCH_SIZE` | ❌ | `5` | Run auto-consolidation only once this many memories are pending (set `1` to consolidate on every retain) |
-| `KIROK_RECALL_MIN_SIMILARITY` | ❌ | `0.62` | Minimum cosine similarity for a semantic memory hit to reach recall (keyword/FTS hits are exempt) |
-| `KIROK_OBS_MIN_SIMILARITY` | ❌ | `0.62` | Minimum cosine similarity for a semantic observation hit to reach recall |
-| `KIROK_AUTO_SNAPSHOT_HOURS` | ❌ | `24` | Hours between startup auto-snapshots of the database (`0` disables) |
-| `KIROK_SNAPSHOT_KEEP` | ❌ | `5` | Auto-snapshot generations to keep before rotating out the oldest |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GEMINI_API_KEY` | — | **Required.** Google Gemini API key. |
+| `KIROK_DB_PATH` | `~/.kirok/memory.db` | SQLite database location. |
+| `KIROK_DEDUP_THRESHOLD` | `0.85` | Cosine similarity above which retain invokes the LLM dedup (ADD/UPDATE/NOOP) decision. |
+| `KIROK_RECALL_MIN_SIMILARITY` | `0.62` | Similarity floor for semantic memory hits in recall. Keyword/FTS hits are exempt. |
+| `KIROK_OBS_MIN_SIMILARITY` | `0.62` | Similarity floor for observation hits in recall. |
+| `KIROK_CONSOLIDATION_BATCH_SIZE` | `5` | Run auto-consolidation only once this many memories are pending (`1` = every retain). |
+| `KIROK_CONSOLIDATION_TIMEOUT` | `120` | Consolidation timeout, seconds. |
+| `KIROK_REFLECT_TIMEOUT` | `300` | Reflect timeout, seconds. |
+| `KIROK_AUTO_SNAPSHOT_HOURS` | `24` | Min hours between startup auto-snapshots (`0` disables). |
+| `KIROK_SNAPSHOT_KEEP` | `5` | Auto-snapshot generations to keep before rotating out the oldest. |
+
+## 🔍 Search quality
+
+Recall runs semantic KNN and FTS5 BM25 in parallel and fuses them with Reciprocal Rank Fusion (`k=60`). Short Japanese keyword queries get special handling: 1–2 character kanji/katakana tokens fall below the trigram tokenizer's 3-char window and can never `MATCH`, so they're rescued by an exact-substring `LIKE` supplement appended after the BM25 hits (hiragana-only short tokens stay excluded — function words would substring-match half a bank).
+
+**The similarity floor is calibrated on real data.** A naive cosine threshold doesn't work here: on live `gemini-embedding-001` vectors the distribution is narrow — off-topic queries score **0.55–0.62** against unrelated banks while true hits score **0.66–0.73**. So the usable floor sits *just* above the off-topic ceiling, at **0.62**. Without it, an unrelated query still returns a full page of memories from any non-empty bank (context pollution); much lower and the floor filters nothing (the old hardcoded `0.4` sat below even off-topic scores). FTS keyword hits bypass the floor entirely — a literal term match is independent evidence, not a weak vector score.
+
+Search parameters aren't tuned by vibes. [`scripts/search_eval.py`](scripts/search_eval.py) runs a golden query set through the *exact* recall pipeline the server uses (extracted as `hybrid_search_memories`, so the harness can't drift from production) and reports hit@1/hit@5/hit@k and MRR:
+
+```bash
+cp scripts/search_eval.example.json my_golden.json   # add 30–50 real cases
+uv run python scripts/search_eval.py my_golden.json --limit 10
+```
+
+## 🛡️ Reliability
+
+- **Atomic consolidation.** Every create/update embedding is generated *before* any DB write; all observation changes plus the "consolidated" mark commit in a single transaction. A failure at any step leaves the database exactly as it was, with the source memories still pending for a later retry — never a half-applied batch.
+- **Soft deletes with audit trail.** An observation the consolidation LLM decides to remove is stamped `deprecated_at` (excluded from search/list/stats) instead of destroyed, and a dedup UPDATE records the pre-merge content first — both logged to `system_events` so a bad LLM decision is recoverable, not silent data loss.
+- **Startup auto-snapshot.** On launch, if the newest auto-snapshot is older than `KIROK_AUTO_SNAPSHOT_HOURS`, a `VACUUM INTO` + `integrity_check` snapshot is written under `~/.kirok/backups/`, keeping the newest `KIROK_SNAPSHOT_KEEP` generations. A snapshot that fails partway leaves no broken file behind, and manual backups are never rotated.
+- **Concurrency.** Connections set `PRAGMA busy_timeout=30000`, so a second MCP client waits out a busy writer instead of failing with `database is locked`.
+- **Fail-open background work.** Auto-consolidation and mental-model refresh run behind `retain` and can never fail it — errors are swallowed, recorded to `system_events`, and surfaced via `KIROK_stats` so silent degradation stays visible.
+
+## 💾 Backup & restore
+
+All state is one SQLite file. The offline `kirok-backup` CLI needs no API key:
+
+```bash
+uv run kirok-backup snapshot        # byte-level DB copy (safe while server runs)
+uv run kirok-backup export          # portable JSON of all banks + memories + observations + models
+uv run kirok-backup import ~/.kirok/backups/kirok-export-YYYYMMDD-HHMMSS.json
+```
+
+`snapshot` and `export` write timestamped files under `~/.kirok/backups/` and refuse to overwrite. `import` runs in one transaction (all-or-nothing), skips existing IDs rather than overwriting, and rebuilds the FTS + vector indexes so search works immediately. Use `--db` to target a different database file.
 
 ## 🩺 Diagnostics
 
-Run the offline setup checker:
-
 ```bash
-uv run kirok-doctor
+uv run kirok-doctor            # offline: Python version, .env, key presence (never printed),
+                               # required modules, FTS5, sqlite-vec, DB writability
+uv run kirok-doctor --json     # machine-readable, for automation
+uv run kirok-doctor --online   # adds one live embedding call to verify Gemini connectivity
 ```
-
-It checks Python version, `.env` loading, `GEMINI_API_KEY` presence (without
-printing the key), required Python modules, SQLite FTS5 support, the sqlite-vec
-extension (the KNN backend), and database directory writability. It does **not**
-call Gemini or any network API.
-
-JSON output is available for automation:
-
-```bash
-uv run kirok-doctor --json
-```
-
-Pass `--online` to also make one live embedding call and confirm Gemini
-connectivity (uses `GEMINI_API_KEY`); the default checks stay fully offline:
-
-```bash
-uv run kirok-doctor --online
-```
-
-If your local environment cannot run the script entry point, use the module form:
-
-```bash
-uv run python -m kirok_mcp.diagnostics
-```
-
-## 💾 Backup & Restore
-
-All memories live in a single SQLite file, so back it up regularly with the
-offline `kirok-backup` command (no API key needed):
-
-```bash
-# Byte-level copy of the database (safe while the server is running)
-uv run kirok-backup snapshot
-
-# Portable JSON export of all banks (memories, observations, models, configs)
-uv run kirok-backup export
-
-# Restore from a JSON export — existing IDs are skipped, never overwritten
-uv run kirok-backup import ~/.kirok/backups/kirok-export-20260610-081853.json
-```
-
-Both `snapshot` and `export` default to timestamped files under
-`~/.kirok/backups/` and refuse to overwrite existing files. `import` runs in a
-single transaction (all-or-nothing) and rebuilds the FTS and vector indexes, so
-search works immediately on the restored data. Use `--db` to target a different
-database file (e.g. restoring into a fresh one).
-
-On top of the manual CLI, the server also takes a **startup auto-snapshot**: on
-launch it snapshots the live database to `~/.kirok/backups/memory-auto-*.db` if
-the newest existing auto-snapshot is older than `KIROK_AUTO_SNAPSHOT_HOURS`
-(default 24 hours; set to `0` to disable), keeping the newest
-`KIROK_SNAPSHOT_KEEP` generations (default 5) and rotating out older ones. This
-is a safety net for anyone who never runs `kirok-backup snapshot` by hand; it
-never touches manual snapshot or export files.
-
-## 🧪 How It Works
-
-### The Retain → Recall → Reflect Loop
-
-1. **Retain**: When you store a memory, Kirok:
-   - Generates a semantic embedding via `gemini-embedding-001`
-   - Extracts entities and keywords via `gemini-2.5-flash-lite`
-   - Checks for duplicates using cosine similarity (> 0.85 threshold)
-   - If similar memories exist: decides to ADD, UPDATE existing, or SKIP
-   - Indexes in both SQLite and FTS5 for hybrid search
-   - Auto-consolidates observations once enough memories are pending (debounced by `KIROK_CONSOLIDATION_BATCH_SIZE`, default 5). Consolidation applies as a single atomic transaction, and an observation the LLM decides to remove is soft-deleted (`deprecated_at` set, excluded from search/stats) rather than destroyed, so it stays recoverable
-
-   **Smart Retain** first asks the LLM to score content importance (1-10).
-   If the score meets the threshold, it runs this same Retain pipeline — including
-   deduplication, UPDATE/NOOP decisions, indexing, and auto-consolidation.
-
-2. **Recall**: When you search, Kirok:
-   - Runs semantic search (sqlite-vec per-bank vector KNN, with automatic brute-force fallback)
-   - Runs keyword search (FTS5 with BM25 ranking)
-   - Merges results using [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) (RRF, k=60)
-   - Shows consolidated observations first, then supporting memories
-   - Returns a compact result by default (content + ID); pass `verbose=true` for relevance scores
-
-3. **Reflect**: When you reflect, Kirok:
-   - Retrieves relevant memories via semantic search
-   - Sends them to the LLM with existing mental models as context
-   - Saves the resulting insight as a new mental model
-   - Can mark that model for auto-refresh after future consolidation
-
-### Memory Banks
-
-Memories are organized into **banks** — think of them as folders for your AI's memory. To keep recall accurate, prefer a small, stable set of broad-purpose banks over one-off banks per task (see `skills/kirok/SKILL.md` for the full guidance used by the Kirok skill):
-
-- `"user-prefs"` — User personal preferences and rules
-- `"architecture"` — System design and technical specs
-- `"troubleshooting"` — Error logs, root causes, and fixes
-- `"milestones"` — Project achievements and work history
-- `"scratch"` — Temporary or volatile memory
-
-Create additional banks only when their purpose is broad enough to capture many future memories. Your AI agent will suggest appropriate bank names as you use Kirok.
-
----
 
 ## 🧑‍💻 Development
 
-Run the test suite (pytest is the standard runner; it also collects the
-unittest-style test classes):
-
 ```bash
-uv run pytest
+uv sync
+uv run --no-sync pytest        # 164 offline tests; no API key or network needed
 ```
 
-The tests cover the SQLite database layer, FTS query handling, bank clearing and
-deletion consistency, embedding utilities, Smart Retain's routing through the
-shared Retain pipeline, Reflect auto-refresh options, backup/export/import
-roundtrips, the background-failure log, and offline diagnostics. They do not
-call Gemini or any external API. The same suite runs in CI on every push
-(`.github/workflows/test.yml`, Ubuntu and Windows).
+The suite is fully offline — importing `kirok_mcp.server` is side-effect-free (the API key is checked at startup, not import) and tests swap in fake Gemini clients. CI runs the same suite on Ubuntu and Windows on every push ([.github/workflows/test.yml](.github/workflows/test.yml)). See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR.
 
----
+## 📚 Documentation
 
-## ❓ Troubleshooting
+- [docs/architecture.md](docs/architecture.md) — internal design, data model, consolidation engine
+- [docs/tools-reference.md](docs/tools-reference.md) — full parameter reference for all 19 tools
+- [CHANGELOG.md](CHANGELOG.md) — version history (current: 1.3.0)
 
-<details>
-<summary><b>"uv: command not found" or "'uv' is not recognized"</b></summary>
+## 📄 License
 
-**uv is not installed or not in your PATH.**
+MIT — see [LICENSE](LICENSE).
 
-- Run the uv installation command again from [Step 2](#step-2-install-uv-python-package-manager)
-- Close and reopen your terminal / PowerShell after installation
-- On Mac, you may need to restart your shell: `source ~/.zshrc`
+## Acknowledgements
 
-</details>
-
-<details>
-<summary><b>Not sure what's wrong with your setup?</b></summary>
-
-Run:
-
-```bash
-uv run kirok-doctor
-```
-
-If that command itself fails because your environment is mid-upgrade or a local
-script is locked, try:
-
-```bash
-uv run python -m kirok_mcp.diagnostics
-```
-
-The diagnostic output is offline and safe to share after checking paths; it never
-prints your Gemini API key.
-
-</details>
-
-<details>
-<summary><b>"Python 3.12+ is required" or version mismatch</b></summary>
-
-Check your Python version:
-```bash
-python3 --version   # Mac
-python --version    # Windows
-```
-
-If it shows an older version, install Python 3.12+ from [Step 1](#step-1-install-python-312).
-
-On Mac with multiple Python versions, uv will automatically find the right one. On Windows, uninstall older versions or adjust your PATH.
-
-</details>
-
-<details>
-<summary><b>Kirok doesn't appear in Claude Desktop</b></summary>
-
-1. Make sure you **completely quit** Claude Desktop (not just close the window) and restart it
-2. Check that the path in `claude_desktop_config.json` is correct and uses the right format:
-   - Mac: `/Users/yourname/kirok-mcp` (forward slashes)
-   - Windows: `C:\\Users\\YourName\\Desktop\\kirok-mcp` (double backslashes)
-3. Check for JSON syntax errors in your config file (missing commas, brackets, etc.)
-4. Look at Claude Desktop logs for error messages
-
-</details>
-
-<details>
-<summary><b>"GEMINI_API_KEY not set" or API errors</b></summary>
-
-1. Make sure you copied `.env.example` to `.env` (not `.env.example`)
-2. Open `.env` and verify your API key is there: `GEMINI_API_KEY=AIzaSy...`
-3. Make sure there are no spaces around the `=` sign
-4. Make sure the key is valid — test it at [Google AI Studio](https://aistudio.google.com/)
-
-</details>
-
-<details>
-<summary><b>"git: command not found" or "'git' is not recognized"</b></summary>
-
-Git is not installed on your system:
-- **Mac**: Run `xcode-select --install` in Terminal
-- **Windows**: Download from [git-scm.com](https://git-scm.com/download/win)
-
-Alternatively, download Kirok as a ZIP from [GitHub](https://github.com/TadFuji/kirok-mcp) (green "Code" button → "Download ZIP").
-
-</details>
-
-<details>
-<summary><b>"Connection closed" / server crashes on launch (especially on Windows + cloud-synced folders)</b></summary>
-
-If the MCP client reports `Connection closed` or `Failed to connect` and the server
-dies before starting, the cause is often the `uv run` launch command itself, **not**
-your code or API key. Verify the environment is healthy first:
-
-```bash
-# Run with the venv's Python directly so a stuck `uv run` can't get in the way
-python -m kirok_mcp.diagnostics --json
-```
-
-If every check passes, the problem is the launcher. `uv run` re-syncs the project on
-every launch, which on Windows can fail because:
-
-- the running entry-point `.exe` cannot be regenerated while it is in use (`os error 32`), or
-- a cloud-sync service (OneDrive, iCloud Drive, Google Drive) locks files inside `.venv`,
-  so the sync aborts (`os error 5`) and can even break the editable install.
-
-**Fix: launch the venv's Python directly instead of `uv run`.** This skips sync and
-entry-point regeneration entirely, and does not depend on the editable install:
-
-```json
-{
-  "mcpServers": {
-    "kirok": {
-      "command": "C:\\path\\to\\kirok-mcp\\.venv\\Scripts\\python.exe",
-      "args": ["-m", "kirok_mcp.server"],
-      "env": { "PYTHONPATH": "C:\\path\\to\\kirok-mcp\\src" }
-    }
-  }
-}
-```
-
-On Mac/Linux use forward slashes and `.venv/bin/python`. `GEMINI_API_KEY` is still read
-from `.env`, so you do not need to put it in the config. For the Claude Code CLI:
-
-```bash
-claude mcp remove kirok -s user
-claude mcp add kirok -s user -e "PYTHONPATH=/path/to/kirok-mcp/src" \
-  -- /path/to/kirok-mcp/.venv/bin/python -m kirok_mcp.server
-```
-
-After changing the config, reconnect from the `/mcp` menu — a full client restart is
-usually not required.
-
-</details>
-
----
-
-## 📂 Project Structure
-
-```
-kirok-mcp/
-├── src/kirok_mcp/
-│   ├── __init__.py       # Package metadata
-│   ├── server.py         # MCP server + 19 tool definitions
-│   ├── db/               # SQLite database layer, split by domain
-│   │   ├── core.py       #   MemoryDB facade (composes the mixins below)
-│   │   ├── schema.py     #   Tables, FTS5 + sqlite-vec setup & migrations
-│   │   ├── memories.py   #   Memory CRUD
-│   │   ├── search.py     #   FTS5 keyword search + vector KNN
-│   │   ├── observations.py #  Observation CRUD
-│   │   ├── models.py     #   Mental model CRUD
-│   │   ├── banks.py      #   Bank stats/config/deletion + failure log
-│   │   └── base.py       #   Shared helpers (vectors, paths, sanitizing)
-│   ├── backup.py         # kirok-backup CLI (export/import/snapshot)
-│   ├── diagnostics.py    # kirok-doctor offline checks
-│   ├── retry.py          # Bounded exponential backoff for API calls
-│   ├── llm.py            # Gemini LLM for extraction & reflection
-│   └── embeddings.py     # Gemini Embeddings + similarity utils
-├── docs/
-│   ├── architecture.md   # Detailed system design
-│   └── tools-reference.md # Complete tool documentation
-├── .env.example          # Environment template
-├── pyproject.toml        # Project metadata & dependencies
-├── LICENSE               # MIT License
-├── CHANGELOG.md          # Version history
-└── CONTRIBUTING.md       # Contribution guidelines
-```
-
-## 📜 License
-
-MIT License — see [LICENSE](LICENSE) for details.
-
-## 🙏 Acknowledgements
-
-- [Model Context Protocol (MCP)](https://modelcontextprotocol.io) by Anthropic
+- [Model Context Protocol](https://modelcontextprotocol.io) and the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) (FastMCP)
 - [Google Gemini API](https://ai.google.dev/) for embeddings and LLM
-- [Mem0](https://github.com/mem0ai/mem0) for inspiration on smart deduplication
+- [Mem0](https://github.com/mem0ai/mem0) — inspiration for smart deduplication and the knowledge layer
 - [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) (Cormack et al., 2009)
