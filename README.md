@@ -451,6 +451,10 @@ All configuration is via environment variables in the `.env` file:
 | `KIROK_REFLECT_TIMEOUT` | ❌ | `300` | Timeout in seconds for reflect operations |
 | `KIROK_CONSOLIDATION_TIMEOUT` | ❌ | `120` | Timeout in seconds for consolidation |
 | `KIROK_CONSOLIDATION_BATCH_SIZE` | ❌ | `5` | Run auto-consolidation only once this many memories are pending (set `1` to consolidate on every retain) |
+| `KIROK_RECALL_MIN_SIMILARITY` | ❌ | `0.62` | Minimum cosine similarity for a semantic memory hit to reach recall (keyword/FTS hits are exempt) |
+| `KIROK_OBS_MIN_SIMILARITY` | ❌ | `0.62` | Minimum cosine similarity for a semantic observation hit to reach recall |
+| `KIROK_AUTO_SNAPSHOT_HOURS` | ❌ | `24` | Hours between startup auto-snapshots of the database (`0` disables) |
+| `KIROK_SNAPSHOT_KEEP` | ❌ | `5` | Auto-snapshot generations to keep before rotating out the oldest |
 
 ## 🩺 Diagnostics
 
@@ -469,6 +473,13 @@ JSON output is available for automation:
 
 ```bash
 uv run kirok-doctor --json
+```
+
+Pass `--online` to also make one live embedding call and confirm Gemini
+connectivity (uses `GEMINI_API_KEY`); the default checks stay fully offline:
+
+```bash
+uv run kirok-doctor --online
 ```
 
 If your local environment cannot run the script entry point, use the module form:
@@ -499,6 +510,14 @@ single transaction (all-or-nothing) and rebuilds the FTS and vector indexes, so
 search works immediately on the restored data. Use `--db` to target a different
 database file (e.g. restoring into a fresh one).
 
+On top of the manual CLI, the server also takes a **startup auto-snapshot**: on
+launch it snapshots the live database to `~/.kirok/backups/memory-auto-*.db` if
+the newest existing auto-snapshot is older than `KIROK_AUTO_SNAPSHOT_HOURS`
+(default 24 hours; set to `0` to disable), keeping the newest
+`KIROK_SNAPSHOT_KEEP` generations (default 5) and rotating out older ones. This
+is a safety net for anyone who never runs `kirok-backup snapshot` by hand; it
+never touches manual snapshot or export files.
+
 ## 🧪 How It Works
 
 ### The Retain → Recall → Reflect Loop
@@ -509,7 +528,7 @@ database file (e.g. restoring into a fresh one).
    - Checks for duplicates using cosine similarity (> 0.85 threshold)
    - If similar memories exist: decides to ADD, UPDATE existing, or SKIP
    - Indexes in both SQLite and FTS5 for hybrid search
-   - Auto-consolidates observations once enough memories are pending (debounced by `KIROK_CONSOLIDATION_BATCH_SIZE`, default 5)
+   - Auto-consolidates observations once enough memories are pending (debounced by `KIROK_CONSOLIDATION_BATCH_SIZE`, default 5). Consolidation applies as a single atomic transaction, and an observation the LLM decides to remove is soft-deleted (`deprecated_at` set, excluded from search/stats) rather than destroyed, so it stays recoverable
 
    **Smart Retain** first asks the LLM to score content importance (1-10).
    If the score meets the threshold, it runs this same Retain pipeline — including
@@ -530,13 +549,15 @@ database file (e.g. restoring into a fresh one).
 
 ### Memory Banks
 
-Memories are organized into **banks** — think of them as folders for your AI's memory:
+Memories are organized into **banks** — think of them as folders for your AI's memory. To keep recall accurate, prefer a small, stable set of broad-purpose banks over one-off banks per task (see `skills/kirok/SKILL.md` for the full guidance used by the Kirok skill):
 
-- `"work"` — Work-related decisions and learnings
-- `"personal"` — Personal preferences and habits
-- `"projects"` — Project-specific knowledge
+- `"user-prefs"` — User personal preferences and rules
+- `"architecture"` — System design and technical specs
+- `"troubleshooting"` — Error logs, root causes, and fixes
+- `"milestones"` — Project achievements and work history
+- `"scratch"` — Temporary or volatile memory
 
-Create as many banks as you need. Your AI agent will suggest appropriate bank names as you use Kirok.
+Create additional banks only when their purpose is broad enough to capture many future memories. Your AI agent will suggest appropriate bank names as you use Kirok.
 
 ---
 

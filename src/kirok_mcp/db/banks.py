@@ -10,6 +10,10 @@ from kirok_mcp.db.base import MAX_SYSTEM_EVENTS
 
 logger = logging.getLogger("kirok.db")
 
+# system_events rows that are audit trail, not failures — excluded from
+# get_recent_failures so they never crowd real failures out of KIROK_stats.
+_AUDIT_EVENTS = ("observation_deprecated", "memory_dedup_update")
+
 
 class BankMixin:
     """Bank-level operations (expects self.conn, self._vec_available)."""
@@ -50,7 +54,9 @@ class BankMixin:
         ).fetchone()[0]
 
         obs_count = self.conn.execute(
-            "SELECT COUNT(*) FROM observations WHERE bank_id = ?", (bank_id,)
+            "SELECT COUNT(*) FROM observations "
+            "WHERE bank_id = ? AND deprecated_at IS NULL",
+            (bank_id,),
         ).fetchone()[0]
 
         return {
@@ -227,6 +233,32 @@ class BankMixin:
             "observations_mission": new_om,
         }
 
+    def _record_event(
+        self, bank_id: str, event: str, detail: str = "", commit: bool = True
+    ) -> None:
+        """Append one row to the capped ``system_events`` audit log.
+
+        Shared by ``record_failure`` (best-effort background-failure log) and
+        observation deprecation (atomic audit). ``commit=False`` lets the caller
+        fold the event into a larger transaction; the insert then raises on error
+        rather than swallowing it, so the caller can roll the whole batch back.
+        """
+        assert self.conn is not None
+
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            "INSERT INTO system_events (bank_id, event, detail, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (bank_id, event, detail, now),
+        )
+        self.conn.execute(
+            "DELETE FROM system_events WHERE id NOT IN "
+            "(SELECT id FROM system_events ORDER BY id DESC LIMIT ?)",
+            (MAX_SYSTEM_EVENTS,),
+        )
+        if commit:
+            self.conn.commit()
+
     def record_failure(self, bank_id: str, event: str, detail: str = "") -> None:
         """Record a background failure so it can be surfaced to the user.
 
@@ -238,19 +270,8 @@ class BankMixin:
         """
         assert self.conn is not None
 
-        now = datetime.now(timezone.utc).isoformat()
         try:
-            self.conn.execute(
-                "INSERT INTO system_events (bank_id, event, detail, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (bank_id, event, detail, now),
-            )
-            self.conn.execute(
-                "DELETE FROM system_events WHERE id NOT IN "
-                "(SELECT id FROM system_events ORDER BY id DESC LIMIT ?)",
-                (MAX_SYSTEM_EVENTS,),
-            )
-            self.conn.commit()
+            self._record_event(bank_id, event, detail, commit=True)
         except Exception as e:
             logger.warning("Could not record failure event '%s': %s", event, e)
             try:
@@ -267,17 +288,20 @@ class BankMixin:
         """
         assert self.conn is not None
 
+        audit_ph = ",".join("?" * len(_AUDIT_EVENTS))
         if bank_id is None:
             rows = self.conn.execute(
                 "SELECT bank_id, event, detail, created_at FROM system_events "
+                f"WHERE event NOT IN ({audit_ph}) "
                 "ORDER BY id DESC LIMIT ?",
-                (limit,),
+                (*_AUDIT_EVENTS, limit),
             ).fetchall()
         else:
             rows = self.conn.execute(
                 "SELECT bank_id, event, detail, created_at FROM system_events "
-                "WHERE bank_id = ? ORDER BY id DESC LIMIT ?",
-                (bank_id, limit),
+                f"WHERE bank_id = ? AND event NOT IN ({audit_ph}) "
+                "ORDER BY id DESC LIMIT ?",
+                (bank_id, *_AUDIT_EVENTS, limit),
             ).fetchall()
 
         return [

@@ -92,3 +92,25 @@ def test_record_failure_never_raises():
     finally:
         db.close()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_audit_events_do_not_crowd_out_failures():
+    """Deprecation audit rows are logged but never shown as failures."""
+    tmp = tempfile.mkdtemp()
+    db = _make_db(tmp)
+    try:
+        db.record_failure("bank-a", "auto_consolidation", "real failure")
+        for i in range(5):
+            db._record_event("bank-a", "observation_deprecated", f"obs-{i}")
+
+        failures = db.get_recent_failures("bank-a", limit=3)
+        assert [f["event"] for f in failures] == ["auto_consolidation"]
+        # The audit rows themselves are still in system_events
+        count = db.conn.execute(
+            "SELECT COUNT(*) FROM system_events WHERE event = ?",
+            ("observation_deprecated",),
+        ).fetchone()[0]
+        assert count == 5
+    finally:
+        db.close()
+        shutil.rmtree(tmp, ignore_errors=True)

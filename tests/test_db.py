@@ -54,9 +54,10 @@ class MemoryDBTest(unittest.TestCase):
     def test_fts_query_sanitization_handles_special_syntax(self) -> None:
         # Tokens shorter than 3 chars are dropped for the trigram tokenizer
         # ('03', '25', 'x', 'y' here), leaving only the >=3-char tokens.
+        # Kept tokens are OR-joined so a document matching any one is a hit.
         sanitized = _sanitize_fts_query('2026-03-25 ASCII AND NEAR("x" "y") * ^')
 
-        self.assertEqual(sanitized, '"2026" "ASCII"')
+        self.assertEqual(sanitized, '"2026" OR "ASCII"')
         self.assertIsNone(_sanitize_fts_query(" AND - * ^ "))
 
     def test_clear_bank_removes_memories_and_observations_only(self) -> None:
@@ -218,6 +219,10 @@ class MemoryDBTest(unittest.TestCase):
         self.assertEqual(stats["mental_model_count"], 1)
         # Only the unconsolidated memory (m2) is pending after m1 is consolidated.
         self.assertEqual(stats["unconsolidated_count"], 1)
+
+    def test_connect_sets_busy_timeout(self) -> None:
+        busy_timeout = self.db.conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        self.assertEqual(busy_timeout, 30000)
 
     def test_mental_model_options_are_persisted(self) -> None:
         model_id = self.db.insert_mental_model_with_options(

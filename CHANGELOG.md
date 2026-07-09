@@ -7,16 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-10
+
 ### Changed
-- **Short Japanese keyword queries now work**: 1-2 character kanji/katakana tokens (京都, 会議, バグ — below the trigram tokenizer's 3-char window, so they could never MATCH) are now served by an exact-substring LIKE supplement over the FTS text, appended after the BM25-ranked hits. Hiragana-only short tokens stay excluded (function words would substring-match half the bank). Previously these queries silently degraded hybrid search to semantic-only
+- **Short Japanese keyword queries now work**: 1-2 character kanji/katakana tokens (京都, 会議, バグ — below the trigram tokenizer's 3-char window, so they could never MATCH) are now served by an exact-substring LIKE supplement over the FTS text, appended after the BM25-ranked hits. Hiragana-only short tokens stay excluded (function words would substring-match half the bank). Previously these queries silently degraded hybrid search to semantic-only. The rescue now also runs whenever FTS already filled the results with 3+ char matches, instead of only when FTS came back short — a genuine short-token hit could otherwise be dropped
 - `KIROK_clear_bank` and `KIROK_delete_bank` now require `confirm=true`. Without it they change nothing and return a preview of what would be deleted — a single mistaken tool call can no longer wipe a bank
+- **FTS5 multi-word queries now use OR instead of implicit AND**: a document matching any query token is a hit, with BM25 naturally ranking documents that match more tokens higher — instead of requiring every token to match, which silently hid partial keyword overlaps
+- FTS hits now carry `timestamp` and `entities` (joined from `memories`), fixing the `[unknown]` placeholder that FTS-only recall results used to show and letting time-filtered recall filter FTS hits by their real timestamp directly, instead of intersecting with a separate `search_by_timestamp` call capped at `limit * 2` — which could silently drop in-range but relatively old FTS hits
+- RRF merging (`reciprocal_rank_fusion`) now merges matching items field-by-field instead of letting one list's dict fully overwrite the other's, so an FTS-only hit keeps its semantic metadata and vice versa
+- `vec_search`'s unused `candidate_multiplier` parameter is removed (per-bank KNN needs no over-fetch window; it stopped affecting results after the 1.1.0 per-bank partitioning)
+- `KIROK_retain`'s embedding and entity-extraction calls now run concurrently (`asyncio.gather`) instead of sequentially, cutting retain latency
+- `KIROK_recall` no longer lists an observation's own source memories under "Supporting Memories" — they were duplicated there and double-counted against `limit`
+- `kirok-doctor` gains an `--online` flag that adds one live embedding call to verify Gemini connectivity; default (offline) behavior is unchanged
 
 ### Added
 - `scripts/search_eval.py` (+ `search_eval.example.json`): measures recall quality (hit@1/5/k, MRR) against a golden query set, through the exact recall pipeline the server uses (extracted as `hybrid_search_memories`). This is the yardstick for tuning search parameters — before it, no search change could be shown to help or hurt
-- New offline tests: `test_llm_retry.py`, `test_search_eval.py`, short-CJK rescue and confirm-guard cases
+- SQLite connections now set `PRAGMA busy_timeout=30000` (30s), so concurrent MCP client instances wait out a busy writer instead of failing immediately with `database is locked`
+- Consolidation is now atomic: every create/update embedding is generated before any database write, and all observation changes plus `mark_memories_consolidated` commit as a single transaction. A failure (embedding or DB) leaves the database exactly as it was, with the source memories still unconsolidated for a later retry — instead of a partially-applied batch
+- Observations are now soft-deleted: consolidation's LLM-decided deletes stamp a new `observations.deprecated_at` column instead of removing the row (idempotent migration for existing databases). Deprecated observations are excluded from search, listing, and stats, but the row and an `observation_deprecated` audit event (in `system_events`) survive for recovery
+- Startup auto-snapshot: on server startup, a `VACUUM INTO` snapshot of the live database is taken to `~/.kirok/backups/memory-auto-*.db` if the newest existing auto-snapshot is older than `KIROK_AUTO_SNAPSHOT_HOURS` (default 24; `0` disables it), rotating to keep the newest `KIROK_SNAPSHOT_KEEP` (default 5). Only auto-snapshot files are ever rotated — manual `kirok-backup snapshot`/`export` files are untouched
+- A snapshot that fails partway (VACUUM INTO error or integrity check failure) no longer leaves a broken output file behind
+- JSON export/import now reads every table inside a single transaction (consistent cross-table snapshot even under concurrent WAL writers) and carries `deprecated_at` for observations; importing an older export without that field still works
+- A similarity floor for recall: `KIROK_RECALL_MIN_SIMILARITY` (default `0.62`) drops semantic (vector) memory hits below this cosine similarity, and `KIROK_OBS_MIN_SIMILARITY` (default `0.62`, replacing a hardcoded `0.4` that was below even off-topic scores) does the same for observations. FTS/keyword hits are exempt — a literal term match is independent evidence. 0.62 is calibrated on live `gemini-embedding-001` data: off-topic queries score 0.55-0.62 against unrelated banks, true hits score 0.66-0.73
+- Embedding calls now guard against dimension drift: a returned vector whose length doesn't match `EMBEDDING_DIM` (3072) raises `ValueError` instead of being silently stored
+- `KIROK_stats` now reports `API calls this session: embeddings=N, llm=M`, a session-lifetime counter on the embedding/LLM clients (resets on restart)
+- New offline tests: `test_llm_retry.py`, `test_search_eval.py`, `test_consolidation_atomicity.py`, `test_search_quality.py`, `test_stage3.py`, short-CJK rescue and confirm-guard cases
 
 ### Fixed
 - `consolidate`, `evaluate_importance`, and `deduplicate` now actually retry transient Gemini failures (5xx/429/network). The 1.2.0 notes claimed all LLM calls retried, but these three fell straight to their fail-open defaults on a single transient error — e.g. a duplicate memory stored because deduplication "failed"
+- Deduplication's UPDATE path now records the pre-merge content as a `memory_dedup_update` audit event before overwriting it, so a bad LLM merge can be reconstructed instead of silently erasing the original memory
+- `observation_deprecated` and `memory_dedup_update` audit events no longer show up in `KIROK_stats`'s background-failure list — they are an audit trail, not failures, and were crowding out real background failures
 
 ## [1.2.0] - 2026-07-03
 

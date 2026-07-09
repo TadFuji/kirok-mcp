@@ -57,6 +57,9 @@ class LLMClient:
 
     def __init__(self, api_key: str):
         self.client = genai.Client(api_key=api_key)
+        # ponytail: session-lifetime counter, resets on restart. Upgrade path:
+        # persist to a table if long-term API-usage accounting is ever needed.
+        self.api_calls = 0
 
     async def extract_entities(
         self, text: str, mission: str = ""
@@ -97,6 +100,7 @@ Respond with ONLY valid JSON, no markdown formatting, no explanation."""
             ),
             logger=logger,
         )
+        self.api_calls += 1
 
         result = _parse_json_response(response.text)
         if result:
@@ -159,6 +163,7 @@ Respond with ONLY valid JSON, no markdown formatting, no explanation."""
             ),
             logger=logger,
         )
+        self.api_calls += 1
 
         result = _parse_json_response(response.text)
         if result:
@@ -254,6 +259,7 @@ Respond with ONLY valid JSON, no markdown formatting, no explanation."""
                 ),
                 logger=logger,
             )
+            self.api_calls += 1
 
             result = _parse_json_response(response.text)
             if result is None:
@@ -349,6 +355,7 @@ Respond with ONLY valid JSON, no markdown formatting, no explanation."""
                 ),
                 logger=logger,
             )
+            self.api_calls += 1
 
             result = _parse_json_response(response.text)
             if result and isinstance(result.get("score"), (int, float)):
@@ -444,6 +451,7 @@ Respond with ONLY valid JSON, no markdown formatting, no explanation."""
                 ),
                 logger=logger,
             )
+            self.api_calls += 1
 
             result = _parse_json_response(response.text)
             if result and result.get("action") in ("add", "update", "noop"):

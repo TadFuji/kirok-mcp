@@ -57,6 +57,21 @@ def _join_json_list(raw: str) -> str:
     return ""
 
 
+def _decode_json_list(raw: str) -> list:
+    """Decode a JSON array string to a list, tolerating bad JSON.
+
+    Companion to ``_join_json_list`` for callers that need the list itself
+    (e.g. an FTS hit's entities) rather than the space-joined form. A malformed
+    or non-list value (legacy or hand-edited rows) degrades to an empty list so
+    a single bad row cannot break a search.
+    """
+    try:
+        parsed = json.loads(raw) if raw else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 def _clean_fts_tokens(query: str) -> list[str]:
     """Strip FTS5 special syntax from a query and split it into plain tokens.
 
@@ -87,7 +102,10 @@ def _sanitize_fts_query(query: str) -> str | None:
     with user-supplied queries (especially Japanese text with hyphens
     like dates '2026-03-25').
 
-    Strategy: wrap each token in double quotes to force literal matching.
+    Strategy: wrap each token in double quotes to force literal matching, then
+    join them with OR so a document matching any token is a hit (BM25 naturally
+    ranks documents matching more tokens higher). Space-joining would mean FTS5's
+    implicit AND, hiding every document that lacks even one token.
     Returns None if no valid tokens remain after sanitization.
     """
     # The trigram tokenizer indexes 3-character windows, so tokens shorter
@@ -98,8 +116,9 @@ def _sanitize_fts_query(query: str) -> str | None:
     if not tokens:
         return None
 
-    # Double-quote each token for safe literal matching
-    quoted = ' '.join(f'"{t}"' for t in tokens)
+    # Double-quote each token for safe literal matching, OR-joined so partial
+    # keyword overlap still surfaces (BM25 orders by how many tokens hit).
+    quoted = ' OR '.join(f'"{t}"' for t in tokens)
     return quoted
 
 

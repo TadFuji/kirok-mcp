@@ -260,7 +260,10 @@ class _FakeRecallDB:
                 "id": "obs-1",
                 "content": "User consistently prefers a dark UI.",
                 "timestamp": "2026-05-04T00:00:00+00:00",
-                "source_memory_ids": ["mem-1"],
+                # No overlap with the returned memory so this test keeps
+                # exercising compact display; the observation/supporting dedup
+                # is covered in test_stage3.
+                "source_memory_ids": [],
                 "similarity": 0.88,
             }
         ][:top_k]
@@ -486,6 +489,7 @@ class _FakeDedupDB:
         self._update_result = update_result
         self.update_calls = []
         self.insert_calls = []
+        self.events = []
 
     def get_bank_config(self, bank_id: str) -> dict:
         return {"bank_id": bank_id, "retain_mission": "", "observations_mission": ""}
@@ -508,6 +512,9 @@ class _FakeDedupDB:
     def insert_memory(self, **kwargs) -> str:
         self.insert_calls.append(kwargs)
         return "new-1"
+
+    def _record_event(self, bank_id, event, detail="", commit=True) -> None:
+        self.events.append({"bank_id": bank_id, "event": event, "detail": detail})
 
     def count_unconsolidated_memories(self, bank_id: str) -> int:
         return 0  # keeps _maybe_consolidate a no-op

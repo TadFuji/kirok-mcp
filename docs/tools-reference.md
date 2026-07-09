@@ -13,7 +13,7 @@ Store new information in agent memory.
 **Parameters:**
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `bank_id` | string | ✅ | — | Memory bank identifier (e.g. `"project-alpha"`, `"user-prefs"`) |
+| `bank_id` | string | ✅ | — | Memory bank identifier (e.g. `"architecture"`, `"user-prefs"`) |
 | `content` | string | ✅ | — | The information to remember |
 | `context` | string | ❌ | `""` | Source context (e.g. `"meeting notes"`, `"code review"`) |
 | `timestamp` | string | ❌ | now | ISO 8601 timestamp |
@@ -29,7 +29,7 @@ Store new information in agent memory.
 **Example:**
 ```
 KIROK_retain(
-    bank_id="my-project",
+    bank_id="architecture",
     content="The deploy pipeline uses GitHub Actions with a staging environment on Vercel",
     context="architecture decision"
 )
@@ -61,7 +61,7 @@ Search and retrieve relevant memories.
 **Example:**
 ```
 KIROK_recall(
-    bank_id="my-project",
+    bank_id="architecture",
     query="deployment pipeline",
     limit=5
 )
@@ -91,7 +91,7 @@ Generate insights from accumulated memories.
 **Example:**
 ```
 KIROK_reflect(
-    bank_id="my-project",
+    bank_id="architecture",
     query="What architectural patterns have emerged in this project?",
     auto_refresh=True
 )
@@ -134,7 +134,8 @@ pending), use this to force consolidation of any leftover memories immediately.
 
 **Behavior:**
 - Finds unconsolidated memories (runs regardless of the debounce threshold)
-- Creates/updates/deletes observations
+- Creates/updates observations; obsolete ones are soft-deleted (`deprecated_at` set, excluded from search/listing/stats) rather than destroyed, so a mistaken LLM delete stays recoverable
+- Applies as a single atomic transaction — a failure leaves the database untouched and the memories unconsolidated for a later retry
 - Auto-refreshes mental models with `auto_refresh=True`
 
 ---
@@ -225,10 +226,12 @@ List all memory banks with counts. No parameters.
 |------|------|----------|-------------|
 | `bank_id` | string | ✅ | Bank to get stats for |
 
-Returns: memory count, mental model count, observation count, unconsolidated
-count, and the most recent background failures (auto-consolidation /
-mental-model auto-refresh errors that were swallowed to protect the retain
-that triggered them). Shows `Background failures: none recorded` when clean.
+Returns: memory count, mental model count, observation count (deprecated
+observations excluded), unconsolidated count, the most recent background
+failures (auto-consolidation / mental-model auto-refresh errors that were
+swallowed to protect the retain that triggered them), and session-lifetime API
+usage (`embeddings=N, llm=M`, reset on restart). Shows `Background failures:
+none recorded` when clean.
 
 ### `KIROK_clear_bank`
 

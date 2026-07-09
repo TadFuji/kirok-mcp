@@ -364,15 +364,26 @@ class MemoryMixin:
         ).fetchone()[0]
 
     def mark_memories_consolidated(
-        self, memory_ids: list[str]
+        self, memory_ids: list[str], commit: bool = True
     ) -> None:
-        """Mark memories as consolidated."""
+        """Mark memories as consolidated.
+
+        Consolidation calls this last with ``commit=True`` to atomically commit
+        the whole batch of observation changes that ran before it with
+        ``commit=False``; a failure here rolls the entire batch back so
+        observations are never applied while their source memories stay unmarked.
+        """
         assert self.conn is not None
 
         now = datetime.now(timezone.utc).isoformat()
-        for mid in memory_ids:
-            self.conn.execute(
-                "UPDATE memories SET consolidated_at = ? WHERE id = ?",
-                (now, mid),
-            )
-        self.conn.commit()
+        try:
+            for mid in memory_ids:
+                self.conn.execute(
+                    "UPDATE memories SET consolidated_at = ? WHERE id = ?",
+                    (now, mid),
+                )
+            if commit:
+                self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise

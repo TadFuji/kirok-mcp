@@ -1,6 +1,7 @@
 import unittest
 
 from kirok_mcp.embeddings import (
+    EMBEDDING_DIM,
     EmbeddingClient,
     TASK_TYPE_DOCUMENT,
     TASK_TYPE_QUERY,
@@ -41,7 +42,11 @@ class EmbeddingsTest(unittest.TestCase):
         results = reciprocal_rank_fusion(semantic_results, keyword_results, k=60)
 
         self.assertEqual([r["id"] for r in results], ["b", "a", "c"])
-        self.assertIn("richer metadata", results[0]["content"])
+        # Fields merge across lists; the first writer wins on shared keys, so
+        # id "b" keeps the semantic list's content while gaining the keyword
+        # list's unique "score" field.
+        self.assertEqual(results[0]["content"], "semantic b")
+        self.assertEqual(results[0]["score"], 0.1)
         self.assertGreater(results[0]["rrf_score"], results[1]["rrf_score"])
 
     def test_semantic_search_empty_candidates(self) -> None:
@@ -103,7 +108,8 @@ class _FakeAioModels:
 
     async def embed_content(self, model, contents, config):
         self.calls.append({"contents": contents, "task_type": config.task_type})
-        return _FakeEmbedResult([0.1, 0.2, 0.3])
+        # Full-width vector: embed() now guards against dimension drift.
+        return _FakeEmbedResult([0.1, 0.2, 0.3] + [0.0] * (EMBEDDING_DIM - 3))
 
 
 class _FakeClient:
@@ -120,7 +126,8 @@ class EmbedTaskTypeTest(unittest.IsolatedAsyncioTestCase):
     async def test_embed_defaults_to_document_and_returns_values(self) -> None:
         ec = self._client()
         vals = await ec.embed("hello")
-        self.assertEqual(vals, [0.1, 0.2, 0.3])
+        self.assertEqual(len(vals), EMBEDDING_DIM)
+        self.assertEqual(vals[:3], [0.1, 0.2, 0.3])
         self.assertEqual(ec.client.aio.models.calls[-1]["task_type"], TASK_TYPE_DOCUMENT)
 
     async def test_embed_passes_query_task_type(self) -> None:

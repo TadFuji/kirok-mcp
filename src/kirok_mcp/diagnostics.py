@@ -183,15 +183,56 @@ def _check_db_path_writable(raw_path: str | None = None) -> DiagnosticResult:
     )
 
 
+def _check_online_embedding() -> DiagnosticResult:
+    """Make one live embedding call to confirm the Gemini API is reachable.
+
+    Only runs under `kirok-doctor --online`; the default diagnostics stay fully
+    offline. Reports success/failure and the round-trip time.
+    """
+    import asyncio
+    import time
+
+    key = os.environ.get("GEMINI_API_KEY", "")
+    if not key.strip():
+        return DiagnosticResult(
+            "online_embedding",
+            "fail",
+            "GEMINI_API_KEY is not set; cannot run the online embedding check.",
+        )
+    try:
+        from kirok_mcp.embeddings import EmbeddingClient
+
+        client = EmbeddingClient(api_key=key)
+        start = time.perf_counter()
+        values = asyncio.run(client.embed("kirok online diagnostic probe"))
+        elapsed = time.perf_counter() - start
+    except Exception as exc:
+        return DiagnosticResult(
+            "online_embedding",
+            "fail",
+            f"Embedding API call failed: {exc}",
+        )
+    return DiagnosticResult(
+        "online_embedding",
+        "pass",
+        f"Embedding API responded in {elapsed:.2f}s ({len(values)} dims).",
+    )
+
+
 def run_diagnostics(
     env_path: Path | None = None,
     db_path: str | None = None,
+    online: bool = False,
 ) -> list[DiagnosticResult]:
-    """Run offline diagnostics without calling Gemini or any network API."""
+    """Run offline diagnostics without calling Gemini or any network API.
+
+    With ``online=True`` a single live embedding check is appended; the offline
+    checks are unchanged either way.
+    """
     path = env_path or _env_path()
     load_dotenv(path)
 
-    return [
+    results = [
         _check_python_version(),
         _check_env_file(path),
         _check_api_key(),
@@ -203,6 +244,9 @@ def run_diagnostics(
         _check_sqlite_vec(),
         _check_db_path_writable(db_path or os.environ.get("KIROK_DB_PATH")),
     ]
+    if online:
+        results.append(_check_online_embedding())
+    return results
 
 
 def _format_text(results: list[DiagnosticResult]) -> str:
@@ -228,9 +272,14 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Override the database path checked for writability.",
     )
+    parser.add_argument(
+        "--online",
+        action="store_true",
+        help="Also make one live Gemini embedding call to verify connectivity.",
+    )
     args = parser.parse_args(argv)
 
-    results = run_diagnostics(db_path=args.db_path)
+    results = run_diagnostics(db_path=args.db_path, online=args.online)
     if args.json:
         print(json.dumps([asdict(r) for r in results], indent=2))
     else:

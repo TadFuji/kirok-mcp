@@ -7,6 +7,7 @@ import sqlite3
 from typing import Any
 
 from kirok_mcp.db.base import (
+    _decode_json_list,
     _deserialize_vector,
     _sanitize_fts_query,
     _serialize_vector,
@@ -45,8 +46,10 @@ class SearchMixin:
         if safe_query is not None:
             try:
                 rows = self.conn.execute(
-                    """SELECT fts.id, fts.content, bm25(fts_memories) AS score
+                    """SELECT fts.id, fts.content, bm25(fts_memories) AS score,
+                              m.timestamp, m.entities
                        FROM fts_memories fts
+                       JOIN memories m ON m.id = fts.id
                        WHERE fts_memories MATCH ? AND fts.bank_id = ?
                        ORDER BY score
                        LIMIT ?""",
@@ -56,20 +59,32 @@ class SearchMixin:
                 # FTS5 parse error — treat as no FTS hits (the LIKE supplement
                 # below and semantic search still work)
                 rows = []
+            # timestamp/entities let FTS-only hits render with real metadata in
+            # recall and be time-filtered directly (entities decoded like the
+            # memories loaders — the source column stores them as JSON).
             results = [
-                {"id": r["id"], "content": r["content"], "score": r["score"]}
+                {
+                    "id": r["id"],
+                    "content": r["content"],
+                    "score": r["score"],
+                    "timestamp": r["timestamp"],
+                    "entities": _decode_json_list(r["entities"]),
+                }
                 for r in rows
             ]
 
+        # Run the short-token LIKE rescue regardless of how many FTS hits we
+        # already have: when FTS fills `limit` with 3+ char matches, a genuine
+        # 1-2 char kanji/katakana hit would otherwise be silently dropped. Merge
+        # by id, appending after the BM25-ranked FTS hits (rescue rows carry
+        # score 0.0 so they naturally rank below them in RRF).
         short_tokens = _short_cjk_fts_tokens(query)
-        if short_tokens and len(results) < limit:
+        if short_tokens:
             seen = {r["id"] for r in results}
             for row in self._short_token_like_search(bank_id, short_tokens, limit):
-                if row["id"] in seen:
-                    continue
-                results.append(row)
-                if len(results) >= limit:
-                    break
+                if row["id"] not in seen:
+                    results.append(row)
+                    seen.add(row["id"])
 
         return results
 
@@ -105,7 +120,7 @@ class SearchMixin:
         params.append(limit)
 
         rows = self.conn.execute(
-            f"""SELECT m.id, m.content
+            f"""SELECT m.id, m.content, m.timestamp, m.entities
                 FROM memories m
                 JOIN fts_memories f ON f.id = m.id
                 WHERE {' AND '.join(conditions)}
@@ -114,7 +129,16 @@ class SearchMixin:
             params,
         ).fetchall()
 
-        return [{"id": r["id"], "content": r["content"], "score": 0.0} for r in rows]
+        return [
+            {
+                "id": r["id"],
+                "content": r["content"],
+                "score": 0.0,
+                "timestamp": r["timestamp"],
+                "entities": _decode_json_list(r["entities"]),
+            }
+            for r in rows
+        ]
 
     def get_all_embeddings(self, bank_id: str) -> list[dict[str, Any]]:
         """Load all embeddings for a bank (for brute-force cosine similarity)."""
@@ -203,8 +227,6 @@ class SearchMixin:
         query_embedding: list[float],
         bank_id: str,
         top_k: int,
-        *,
-        candidate_multiplier: int = 5,
     ) -> list[dict[str, Any]]:
         """Per-bank KNN vector search via sqlite-vec.
 
@@ -219,9 +241,6 @@ class SearchMixin:
         ``get_all_embeddings`` entries plus a cosine ``similarity``
         (``1 - distance``, clamped >= 0) so RRF and the dedup threshold keep
         working unchanged.
-
-        ``candidate_multiplier`` is retained for API compatibility; per-bank KNN
-        needs no over-fetch window, so it no longer affects results.
         """
         assert self.conn is not None
 
@@ -308,7 +327,8 @@ class SearchMixin:
         rows = self.conn.execute(
             """SELECT id, content, embedding, updated_at, source_memory_ids
                FROM observations
-               WHERE bank_id = ? AND embedding IS NOT NULL""",
+               WHERE bank_id = ? AND embedding IS NOT NULL
+                 AND deprecated_at IS NULL""",
             (bank_id,),
         ).fetchall()
 
@@ -367,7 +387,7 @@ class SearchMixin:
             bank_count = self.conn.execute(
                 "SELECT COUNT(*) FROM observations "
                 "WHERE bank_id = ? AND embedding IS NOT NULL "
-                "AND length(embedding) = ?",
+                "AND length(embedding) = ? AND deprecated_at IS NULL",
                 (bank_id, EMBEDDING_DIM * 4),
             ).fetchone()[0]
             if len(knn_rows) < min(top_k, bank_count):

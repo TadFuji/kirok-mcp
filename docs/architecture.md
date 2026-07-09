@@ -73,7 +73,8 @@ observations (
     source_memory_ids TEXT DEFAULT '[]',
     embedding BLOB,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    deprecated_at TEXT         -- NULL unless soft-deleted by consolidation
 )
 
 -- LLM-generated insights
@@ -147,7 +148,7 @@ both paths are fast; the vec index keeps recall cheap as banks grow.
 Gemini Flash Lite for lightweight LLM tasks:
 - **Entity extraction**: Structured extraction of people, places, organizations, concepts
 - **Reflection**: Multi-memory analysis to generate insights
-- **Consolidation**: Pattern recognition across unconsolidated memories
+- **Consolidation**: Pattern recognition across unconsolidated memories. Applied atomically (all observation writes plus marking memories consolidated commit as one transaction); an observation the LLM decides to remove is soft-deleted (`deprecated_at` stamped, excluded from search/stats) rather than destroyed, keeping the row and an audit event for recovery
 - **Importance scoring**: 1-10 evaluation for smart retain
 - **Deduplication**: Mem0-inspired ADD/UPDATE/NOOP decisions
 

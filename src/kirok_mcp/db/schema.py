@@ -252,7 +252,8 @@ class SchemaMixin:
                 )
                 self.conn.execute(
                     "INSERT INTO fts_observations (id, bank_id, content) "
-                    "SELECT id, bank_id, content FROM observations"
+                    "SELECT id, bank_id, content FROM observations "
+                    "WHERE deprecated_at IS NULL"
                 )
                 self.conn.commit()
             except Exception:
@@ -415,7 +416,8 @@ class SchemaMixin:
             r["id"]
             for r in self.conn.execute(
                 "SELECT id FROM observations "
-                "WHERE embedding IS NOT NULL AND length(embedding) = ?",
+                "WHERE embedding IS NOT NULL AND length(embedding) = ? "
+                "AND deprecated_at IS NULL",
                 (expected_bytes,),
             )
         }
@@ -434,7 +436,8 @@ class SchemaMixin:
 
         rows = self.conn.execute(
             "SELECT id, bank_id, embedding FROM observations "
-            "WHERE embedding IS NOT NULL AND length(embedding) = ?",
+            "WHERE embedding IS NOT NULL AND length(embedding) = ? "
+            "AND deprecated_at IS NULL",
             (expected_bytes,),
         ).fetchall()
 
@@ -491,6 +494,7 @@ class SchemaMixin:
             ("memories", "consolidated_at", "TEXT"),
             ("mental_models", "auto_refresh", "INTEGER DEFAULT 0"),
             ("mental_models", "source_query", "TEXT DEFAULT ''"),
+            ("observations", "deprecated_at", "TEXT"),
         ]
         for table, column, col_type in migrations:
             try:

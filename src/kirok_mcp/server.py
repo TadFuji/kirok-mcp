@@ -16,6 +16,7 @@ import sys
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+from kirok_mcp.backup import auto_snapshot
 from kirok_mcp.db import MemoryDB
 from kirok_mcp.embeddings import (
     EmbeddingClient,
@@ -39,6 +40,10 @@ CONSOLIDATION_TIMEOUT = int(os.environ.get("KIROK_CONSOLIDATION_TIMEOUT", "120")
 # large LLM call plus embeddings), it runs only once at least this many memories
 # are pending. Set to 1 to restore the old "consolidate on every retain".
 CONSOLIDATION_BATCH_SIZE = int(os.environ.get("KIROK_CONSOLIDATION_BATCH_SIZE", "5"))
+# Startup auto-snapshot: safety net for users who never run the manual
+# `kirok-backup snapshot` CLI. 0 disables it.
+AUTO_SNAPSHOT_HOURS = float(os.environ.get("KIROK_AUTO_SNAPSHOT_HOURS", "24"))
+SNAPSHOT_KEEP = int(os.environ.get("KIROK_SNAPSHOT_KEEP", "5"))
 
 # ── Logging ───────────────────────────────────────────────────────────
 
@@ -76,6 +81,20 @@ def _init_runtime() -> None:
     _db.connect()
     atexit.register(_db.close)
 
+    # Best-effort startup snapshot (mtime-gated, so a normal restart within
+    # KIROK_AUTO_SNAPSHOT_HOURS is just one glob() call). Runs synchronously —
+    # VACUUM INTO opens its own sqlite connections and only actually copies the
+    # database once a day, so the rare multi-second startup delay is preferred
+    # over a background thread touching `_db.conn` from a second thread
+    # (sqlite3 connections are not thread-safe by default).
+    try:
+        auto_snapshot(
+            _db.db_path, interval_hours=AUTO_SNAPSHOT_HOURS, keep=SNAPSHOT_KEEP
+        )
+    except Exception as e:
+        logger.warning("Auto-snapshot failed: %s", e)
+        _db.record_failure("_system", "auto_snapshot", str(e))
+
     _embedder = EmbeddingClient(api_key=api_key)
     _llm = LLMClient(api_key=api_key)
 
@@ -84,6 +103,27 @@ def _init_runtime() -> None:
 
 DEDUP_SIMILARITY_THRESHOLD = float(
     os.environ.get("KIROK_DEDUP_THRESHOLD", "0.85")
+)
+
+# Minimum cosine similarity for a semantic (vector) memory hit to reach recall.
+# Without a floor an unrelated query still returns `limit` full memories from
+# any non-empty bank (context pollution). FTS keyword hits are exempt — a
+# literal term match is independent, strong evidence and is not floored here.
+#
+# 0.62 is calibrated on live data (2026-07-10): gemini-embedding-001
+# similarities cluster in a narrow band — off-topic queries score 0.55-0.62
+# against unrelated banks while true hits score 0.66-0.73 — so the usable
+# floor sits just above the off-topic ceiling. Golden-set hit@5/MRR are
+# unchanged between 0.3 and 0.65.
+RECALL_MIN_SIMILARITY = float(
+    os.environ.get("KIROK_RECALL_MIN_SIMILARITY", "0.62")
+)
+
+# Minimum similarity for a consolidated observation to be shown in recall.
+# Same 0.62 calibration as RECALL_MIN_SIMILARITY (the historical 0.4 was below
+# even off-topic scores, so it never filtered anything).
+OBS_MIN_SIMILARITY = float(
+    os.environ.get("KIROK_OBS_MIN_SIMILARITY", "0.62")
 )
 
 
@@ -117,29 +157,45 @@ async def _run_consolidation(bank_id: str) -> str:
     updated_count = 0
     deleted_count = 0
 
+    # Pre-generate every create/update embedding BEFORE touching the database.
+    # If an embed API call fails here we raise without having written anything,
+    # so the DB is untouched and the memories stay unconsolidated for a later
+    # retry — instead of leaving observations half-applied.
+    for action in actions:
+        if action["action"] in ("create", "update"):
+            action["_embedding"] = await _embedder.embed(
+                action["content"], task_type=TASK_TYPE_DOCUMENT
+            )
+
+    # Apply all observation changes and the consolidated mark as ONE atomic
+    # transaction: every observation write runs with commit=False so nothing is
+    # persisted until mark_memories_consolidated commits the whole batch. A
+    # failure in any step self-rolls-back and re-raises (see the db methods), so
+    # observations can never be partially applied while memories go unmarked.
     for action in actions:
         if action["action"] == "delete" and action.get("observation_id"):
-            # DELETE: Remove contradicted/obsolete observation
-            if _db.delete_observation(action["observation_id"]):
+            # DELETE: soft-deprecate the contradicted/obsolete observation
+            # (keeps the row + logs an audit event) rather than destroy it.
+            if _db.deprecate_observation(
+                action["observation_id"],
+                reason=action.get("content", "no reason"),
+                commit=False,
+            ):
                 deleted_count += 1
                 logger.info(
-                    "Observation deleted: %s (reason: %s)",
+                    "Observation deprecated: %s (reason: %s)",
                     action["observation_id"],
                     action.get("content", "no reason"),
                 )
             continue
-
-        # Generate embedding for create/update
-        obs_embedding = await _embedder.embed(
-            action["content"], task_type=TASK_TYPE_DOCUMENT
-        )
 
         if action["action"] == "create":
             _db.insert_observation(
                 bank_id=bank_id,
                 content=action["content"],
                 source_memory_ids=action["source_memory_ids"],
-                embedding=obs_embedding,
+                embedding=action["_embedding"],
+                commit=False,
             )
             created_count += 1
         elif action["action"] == "update" and action.get("observation_id"):
@@ -154,12 +210,13 @@ async def _run_consolidation(bank_id: str) -> str:
                         observation_id=action["observation_id"],
                         content=action["content"],
                         source_memory_ids=merged_ids,
-                        embedding=obs_embedding,
+                        embedding=action["_embedding"],
+                        commit=False,
                     )
                     updated_count += 1
                     break
 
-    # Mark memories as consolidated
+    # Commit the batch by marking the source memories consolidated last.
     consolidated_ids = [m["id"] for m in new_memories]
     _db.mark_memories_consolidated(consolidated_ids)
 
@@ -260,7 +317,14 @@ async def _retain_memory(
     # query below (vec_search), which compares two to-be-stored documents — a
     # document-document comparison, so RETRIEVAL_DOCUMENT is the right type and we
     # avoid a second QUERY embedding call.
-    embedding = await _embedder.embed(content, task_type=TASK_TYPE_DOCUMENT)
+    #
+    # ponytail: embed + extract_entities run concurrently. The dedup NOOP/UPDATE
+    # branches discard the ADD extraction, but ADD is the common case so
+    # overlapping the two Gemini round-trips is a net latency win.
+    embedding, extraction = await asyncio.gather(
+        _embedder.embed(content, task_type=TASK_TYPE_DOCUMENT),
+        _llm.extract_entities(content, mission=mission),
+    )
 
     # ── Smart Deduplication: check for similar existing memories ──
     similar = _db.vec_search(embedding, bank_id, top_k=5)
@@ -290,27 +354,43 @@ async def _retain_memory(
                 target_id = dedup_result.get("target_memory_id", "")
                 merged = dedup_result.get("merged_content", content)
 
+                # Capture the memory's pre-merge content before the LLM overwrites
+                # it, so a bad merge can be reconstructed from the audit log.
+                old_content = next(
+                    (m["content"] for m in highly_similar if m["id"] == target_id),
+                    "",
+                )
+
                 # Re-extract entities for merged content
-                extraction = await _llm.extract_entities(merged, mission=mission)
+                merged_extraction = await _llm.extract_entities(merged, mission=mission)
                 merged_emb = await _embedder.embed(merged, task_type=TASK_TYPE_DOCUMENT)
 
                 updated = _db.update_memory(
                     memory_id=target_id,
                     content=merged,
-                    entities=extraction["entities"],
-                    keywords=extraction["keywords"],
+                    entities=merged_extraction["entities"],
+                    keywords=merged_extraction["keywords"],
                     context=context or None,
                     embedding=merged_emb,
                 )
 
                 if updated:
+                    # Audit the pre-merge content (excluded from failure surfacing
+                    # via _AUDIT_EVENTS) so an LLM merge never silently erases a
+                    # memory without a recoverable trace.
+                    _db._record_event(
+                        bank_id,
+                        "memory_dedup_update",
+                        f"{target_id}: {old_content}",
+                    )
+
                     result = (
                         f"Memory UPDATED (enriched existing).\n\n"
                         f"- Action: UPDATE\n"
                         f"- Reason: {dedup_result['reason']}\n"
                         f"- Updated ID: {target_id}\n"
-                        f"- Entities: {', '.join(extraction['entities']) or '(none)'}\n"
-                        f"- Keywords: {', '.join(extraction['keywords']) or '(none)'}\n"
+                        f"- Entities: {', '.join(merged_extraction['entities']) or '(none)'}\n"
+                        f"- Keywords: {', '.join(merged_extraction['keywords']) or '(none)'}\n"
                     )
 
                     # Debounced background-style consolidation (runs only once
@@ -320,8 +400,7 @@ async def _retain_memory(
                 # If update failed (ID not found), fall through to ADD
 
     # ── Normal ADD flow ──
-    extraction = await _llm.extract_entities(content, mission=mission)
-
+    # `extraction` was computed up-front alongside the embedding (see gather).
     memory_id = _db.insert_memory(
         bank_id=bank_id,
         content=content,
@@ -473,13 +552,26 @@ async def hybrid_search_memories(
         semantic_results = db.vec_search(query_embedding, bank_id, top_k=limit)
 
     fts_results = db.fts_search(bank_id, query, limit=limit)
-    # Apply time filtering to FTS results as well
+    # FTS hits now carry their timestamp, so filter the window directly rather
+    # than intersecting with search_by_timestamp's latest limit*2 (which
+    # silently dropped in-range but relatively old FTS hits). Bounds inclusive,
+    # ISO 8601 lexicographic compare — same semantics as get_embeddings_in_range.
     if time_min or time_max:
-        time_mems = db.search_by_timestamp(
-            bank_id, time_min=time_min or None, time_max=time_max or None, limit=limit * 2
-        )
-        time_ids = {m["id"] for m in time_mems}
-        fts_results = [r for r in fts_results if r["id"] in time_ids]
+        fts_results = [
+            r
+            for r in fts_results
+            if (not time_min or r["timestamp"] >= time_min)
+            and (not time_max or r["timestamp"] <= time_max)
+        ]
+
+    # Floor the semantic side so an unrelated query cannot return full memories
+    # purely because the bank is non-empty. FTS hits pass through unfiltered:
+    # a literal keyword match is independent evidence, not a weak vector score.
+    semantic_results = [
+        r
+        for r in semantic_results
+        if r.get("similarity", 0.0) >= RECALL_MIN_SIMILARITY
+    ]
 
     merged = reciprocal_rank_fusion(semantic_results, fts_results, k=60)
     return merged[:limit]
@@ -526,10 +618,22 @@ async def KIROK_recall(
     )
 
     # ── Observation-first display (inspired by Mem0 knowledge layer) ──
-    # vec_search_observations falls back to brute force internally, so the 0.4
-    # threshold and top_k=5 behave the same with or without the vec extension.
+    # vec_search_observations falls back to brute force internally, so the
+    # OBS_MIN_SIMILARITY threshold and top_k=5 behave the same with or without
+    # the vec extension.
     obs_results = _db.vec_search_observations(query_embedding, bank_id, top_k=5)
-    relevant_obs = [o for o in obs_results if o.get("similarity", 0) > 0.4]
+    relevant_obs = [
+        o for o in obs_results if o.get("similarity", 0) >= OBS_MIN_SIMILARITY
+    ]
+
+    # A memory already folded into a shown observation is redundant as a
+    # Supporting Memory — drop it so it isn't re-displayed (and double-counted)
+    # under both the observation and the raw list.
+    obs_source_ids = set()
+    for o in relevant_obs:
+        obs_source_ids.update(o.get("source_memory_ids", []))
+    if obs_source_ids:
+        top_results = [m for m in top_results if m["id"] not in obs_source_ids]
 
     if not top_results and not relevant_obs:
         return f"No memories found in bank '{bank_id}' matching: {query}"
@@ -770,6 +874,12 @@ async def KIROK_stats(bank_id: str) -> str:
             lines.append(f"  - [{f['created_at'][:19]}] {f['event']}{detail}")
     else:
         lines.append("- Background failures: none recorded")
+
+    # Session-lifetime API usage (see the api_calls counters on the clients).
+    # getattr keeps this robust when clients are unset (import-time / tests).
+    emb_calls = getattr(_embedder, "api_calls", 0)
+    llm_calls = getattr(_llm, "api_calls", 0)
+    lines.append(f"- API calls this session: embeddings={emb_calls}, llm={llm_calls}")
 
     return "\n".join(lines) + "\n"
 

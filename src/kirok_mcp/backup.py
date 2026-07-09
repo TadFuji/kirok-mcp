@@ -20,6 +20,7 @@ import logging
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -59,61 +60,76 @@ def export_data(db: MemoryDB) -> dict[str, Any]:
     """
     assert db.conn is not None
 
-    memories = [
-        {
-            "id": r["id"],
-            "bank_id": r["bank_id"],
-            "content": r["content"],
-            "entities": r["entities"],
-            "keywords": r["keywords"],
-            "context": r["context"],
-            "embedding": _b64_or_none(r["embedding"]),
-            "timestamp": r["timestamp"],
-            "created_at": r["created_at"],
-            "metadata": r["metadata"],
-            "consolidated_at": r["consolidated_at"],
-        }
-        for r in db.conn.execute("SELECT * FROM memories")
-    ]
+    # Read every table inside one transaction so a concurrent WAL writer
+    # can't leave the export with an inconsistent cross-table snapshot.
+    # Guard against already being inside a transaction (e.g. nested calls).
+    own_transaction = not db.conn.in_transaction
+    if own_transaction:
+        db.conn.execute("BEGIN")
+    try:
+        memories = [
+            {
+                "id": r["id"],
+                "bank_id": r["bank_id"],
+                "content": r["content"],
+                "entities": r["entities"],
+                "keywords": r["keywords"],
+                "context": r["context"],
+                "embedding": _b64_or_none(r["embedding"]),
+                "timestamp": r["timestamp"],
+                "created_at": r["created_at"],
+                "metadata": r["metadata"],
+                "consolidated_at": r["consolidated_at"],
+            }
+            for r in db.conn.execute("SELECT * FROM memories")
+        ]
 
-    observations = [
-        {
-            "id": r["id"],
-            "bank_id": r["bank_id"],
-            "content": r["content"],
-            "source_memory_ids": r["source_memory_ids"],
-            "embedding": _b64_or_none(r["embedding"]),
-            "created_at": r["created_at"],
-            "updated_at": r["updated_at"],
-        }
-        for r in db.conn.execute("SELECT * FROM observations")
-    ]
+        observations = [
+            {
+                "id": r["id"],
+                "bank_id": r["bank_id"],
+                "content": r["content"],
+                "source_memory_ids": r["source_memory_ids"],
+                "embedding": _b64_or_none(r["embedding"]),
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+                "deprecated_at": r["deprecated_at"],
+            }
+            for r in db.conn.execute("SELECT * FROM observations")
+        ]
 
-    mental_models = [
-        {
-            "id": r["id"],
-            "bank_id": r["bank_id"],
-            "topic": r["topic"],
-            "insight": r["insight"],
-            "based_on": r["based_on"],
-            "created_at": r["created_at"],
-            "updated_at": r["updated_at"],
-            "auto_refresh": r["auto_refresh"],
-            "source_query": r["source_query"],
-        }
-        for r in db.conn.execute("SELECT * FROM mental_models")
-    ]
+        mental_models = [
+            {
+                "id": r["id"],
+                "bank_id": r["bank_id"],
+                "topic": r["topic"],
+                "insight": r["insight"],
+                "based_on": r["based_on"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+                "auto_refresh": r["auto_refresh"],
+                "source_query": r["source_query"],
+            }
+            for r in db.conn.execute("SELECT * FROM mental_models")
+        ]
 
-    bank_config = [
-        {
-            "bank_id": r["bank_id"],
-            "retain_mission": r["retain_mission"],
-            "observations_mission": r["observations_mission"],
-            "created_at": r["created_at"],
-            "updated_at": r["updated_at"],
-        }
-        for r in db.conn.execute("SELECT * FROM bank_config")
-    ]
+        bank_config = [
+            {
+                "bank_id": r["bank_id"],
+                "retain_mission": r["retain_mission"],
+                "observations_mission": r["observations_mission"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+            for r in db.conn.execute("SELECT * FROM bank_config")
+        ]
+    except Exception:
+        if own_transaction:
+            db.conn.rollback()
+        raise
+    else:
+        if own_transaction:
+            db.conn.commit()
 
     return {
         "format": EXPORT_FORMAT,
@@ -236,22 +252,26 @@ def import_data(db: MemoryDB, data: dict[str, Any]) -> dict[str, dict[str, int]]
             if o["id"] in existing_observations:
                 result["observations"]["skipped"] += 1
                 continue
+            # .get(): exports written before the deprecated_at column exist
+            deprecated_at = o.get("deprecated_at")
             db.conn.execute(
                 """INSERT INTO observations
                    (id, bank_id, content, source_memory_ids, embedding,
-                    created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    created_at, updated_at, deprecated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     o["id"], o["bank_id"], o["content"],
                     o["source_memory_ids"], _blob_or_none(o["embedding"]),
-                    o["created_at"], o["updated_at"],
+                    o["created_at"], o["updated_at"], deprecated_at,
                 ),
             )
-            db.conn.execute(
-                "INSERT INTO fts_observations (id, bank_id, content) "
-                "VALUES (?, ?, ?)",
-                (o["id"], o["bank_id"], o["content"]),
-            )
+            # Deprecated observations stay out of the search indexes
+            if deprecated_at is None:
+                db.conn.execute(
+                    "INSERT INTO fts_observations (id, bank_id, content) "
+                    "VALUES (?, ?, ?)",
+                    (o["id"], o["bank_id"], o["content"]),
+                )
             result["observations"]["inserted"] += 1
 
         for mm in data.get("mental_models", []):
@@ -324,22 +344,88 @@ def snapshot_db(db_path: Path, out_path: Path) -> Path:
         raise FileNotFoundError(f"Database not found: {db_path}")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    src = sqlite3.connect(str(db_path), timeout=60)
     try:
-        src.execute("VACUUM INTO ?", (str(out_path),))
-    finally:
-        src.close()
+        src = sqlite3.connect(str(db_path), timeout=60)
+        try:
+            src.execute("VACUUM INTO ?", (str(out_path),))
+        finally:
+            src.close()
 
-    copy = sqlite3.connect(str(out_path))
-    try:
-        status = copy.execute("PRAGMA integrity_check").fetchone()[0]
-    finally:
-        copy.close()
-    if status != "ok":
-        raise RuntimeError(
-            f"Snapshot failed integrity check ({status}): {out_path}"
-        )
+        copy = sqlite3.connect(str(out_path))
+        try:
+            status = copy.execute("PRAGMA integrity_check").fetchone()[0]
+        finally:
+            copy.close()
+        if status != "ok":
+            raise RuntimeError(
+                f"Snapshot failed integrity check ({status}): {out_path}"
+            )
+    except BaseException:
+        # A broken half-written copy must not survive: auto_snapshot gates on
+        # the newest auto file's mtime, so leaving it would suppress the next
+        # good snapshot for a full interval.
+        out_path.unlink(missing_ok=True)
+        raise
     return out_path
+
+
+# ── Auto-snapshot (startup) ──────────────────────────────────────────
+
+# Naming distinguishes automatic snapshots from manual ``kirok-backup
+# snapshot`` runs (``memory-snapshot-*.db``) so rotation only ever deletes
+# what it created.
+AUTO_SNAPSHOT_PREFIX = "memory-auto-"
+AUTO_SNAPSHOT_GLOB = f"{AUTO_SNAPSHOT_PREFIX}*.db"
+
+
+def _auto_snapshot_files(backup_dir: Path) -> list[Path]:
+    """Auto-snapshot files in ``backup_dir``, newest first."""
+    return sorted(
+        backup_dir.glob(AUTO_SNAPSHOT_GLOB),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+
+def rotate_auto_snapshots(backup_dir: Path, keep: int) -> None:
+    """Delete auto-snapshots beyond the newest ``keep``.
+
+    Only matches ``AUTO_SNAPSHOT_GLOB`` — manual snapshots and JSON exports
+    use different filenames and are never touched.
+    """
+    for old in _auto_snapshot_files(backup_dir)[keep:]:
+        old.unlink()
+
+
+def auto_snapshot(
+    db_path: Path,
+    backup_dir: Path = DEFAULT_BACKUP_DIR,
+    *,
+    interval_hours: float = 24,
+    keep: int = 5,
+) -> Path | None:
+    """Create a timestamped auto-snapshot if the last one is stale enough.
+
+    Returns the new snapshot path, or ``None`` if skipped: disabled
+    (``interval_hours <= 0``) or the newest existing auto-snapshot is younger
+    than ``interval_hours``. Raises on snapshot failure (VACUUM INTO /
+    integrity check) — the caller decides how to log it.
+    """
+    if interval_hours <= 0:
+        return None
+
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    existing = _auto_snapshot_files(backup_dir)
+    if existing:
+        age_hours = (time.time() - existing[0].stat().st_mtime) / 3600
+        if age_hours < interval_hours:
+            return None
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = backup_dir / f"{AUTO_SNAPSHOT_PREFIX}{stamp}.db"
+    snapshot_db(db_path, out)
+    rotate_auto_snapshots(backup_dir, keep)
+    return out
 
 
 # ── CLI ───────────────────────────────────────────────────────────────

@@ -38,6 +38,9 @@ class EmbeddingClient:
 
     def __init__(self, api_key: str):
         self.client = genai.Client(api_key=api_key)
+        # ponytail: session-lifetime counter, resets on restart. Upgrade path:
+        # persist to a table if long-term API-usage accounting is ever needed.
+        self.api_calls = 0
 
     async def embed(
         self, text: str, task_type: str = TASK_TYPE_DOCUMENT
@@ -59,7 +62,17 @@ class EmbeddingClient:
             ),
             logger=logger,
         )
-        return list(result.embeddings[0].values)
+        self.api_calls += 1
+        values = list(result.embeddings[0].values)
+        # Guard against silent dimension drift (model swap, config change): a
+        # wrong-width vector would be stored but excluded from vec_search and the
+        # brute-force path, vanishing from semantic recall without any warning.
+        if len(values) != EMBEDDING_DIM:
+            raise ValueError(
+                f"Embedding API returned {len(values)}-dim vector, "
+                f"expected {EMBEDDING_DIM} (model/config drift?)."
+            )
+        return values
 
     async def embed_batch(
         self, texts: list[str], task_type: str = TASK_TYPE_DOCUMENT
@@ -76,6 +89,7 @@ class EmbeddingClient:
             ),
             logger=logger,
         )
+        self.api_calls += 1
         return [list(e.values) for e in result.embeddings]
 
 
@@ -162,9 +176,17 @@ def reciprocal_rank_fusion(
             item_id = item[id_key]
             rrf_score = 1.0 / (k + rank + 1)
             scores[item_id] = scores.get(item_id, 0.0) + rrf_score
-            # Keep the richest version of the item
-            if item_id not in items or len(str(item)) > len(str(items[item_id])):
-                items[item_id] = item
+            # Merge field-by-field so the same id seen in multiple lists keeps
+            # every key: an FTS-only hit gains semantic metadata and vice versa.
+            # First writer wins on shared keys (deterministic, independent of
+            # which list happened to carry a bulky field like `embedding`).
+            if item_id not in items:
+                items[item_id] = dict(item)
+            else:
+                merged = items[item_id]
+                for key, value in item.items():
+                    if key not in merged:
+                        merged[key] = value
 
     # Build result with RRF scores
     result = []

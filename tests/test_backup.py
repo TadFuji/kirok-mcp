@@ -1,18 +1,22 @@
 """Export / import / snapshot roundtrip tests for kirok_mcp.backup."""
 
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
 
 from kirok_mcp.backup import (
+    auto_snapshot,
     export_data,
     export_to_file,
     import_data,
     import_from_file,
+    rotate_auto_snapshots,
     snapshot_db,
 )
 from kirok_mcp.db import MemoryDB
@@ -238,5 +242,152 @@ def test_snapshot_missing_source():
     try:
         with pytest.raises(FileNotFoundError):
             snapshot_db(Path(tmp) / "nope.db", Path(tmp) / "out.db")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── Auto-snapshot ─────────────────────────────────────────────────────
+
+
+def test_auto_snapshot_creates_file():
+    tmp = tempfile.mkdtemp()
+    db = _make_db(tmp)
+    try:
+        _populate(db)
+        backup_dir = Path(tmp) / "backups"
+        out = auto_snapshot(db.db_path, backup_dir, interval_hours=24, keep=5)
+        assert out is not None
+        assert out.exists()
+        assert out.name.startswith("memory-auto-")
+    finally:
+        db.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_auto_snapshot_skips_when_recent():
+    tmp = tempfile.mkdtemp()
+    db = _make_db(tmp)
+    try:
+        _populate(db)
+        backup_dir = Path(tmp) / "backups"
+        first = auto_snapshot(db.db_path, backup_dir, interval_hours=24, keep=5)
+        assert first is not None
+
+        second = auto_snapshot(db.db_path, backup_dir, interval_hours=24, keep=5)
+        assert second is None
+        # Still just the one file — no second snapshot was created.
+        assert len(list(backup_dir.glob("memory-auto-*.db"))) == 1
+    finally:
+        db.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_auto_snapshot_disabled_by_zero_hours():
+    tmp = tempfile.mkdtemp()
+    db = _make_db(tmp)
+    try:
+        _populate(db)
+        backup_dir = Path(tmp) / "backups"
+        out = auto_snapshot(db.db_path, backup_dir, interval_hours=0, keep=5)
+        assert out is None
+        assert not backup_dir.exists()
+    finally:
+        db.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_rotate_auto_snapshots_keeps_only_auto_files():
+    tmp = tempfile.mkdtemp()
+    backup_dir = Path(tmp)
+    try:
+        # Six auto snapshots with distinct mtimes (oldest to newest).
+        auto_paths = []
+        now = time.time()
+        for i in range(6):
+            p = backup_dir / f"memory-auto-2026070{i}-000000.db"
+            p.write_bytes(b"x")
+            os.utime(p, (now - (6 - i) * 100, now - (6 - i) * 100))
+            auto_paths.append(p)
+
+        # A manual snapshot and a JSON export must never be touched.
+        manual = backup_dir / "memory-snapshot-20260701-000000.db"
+        manual.write_bytes(b"manual")
+        export = backup_dir / "kirok-export-20260701-000000.json"
+        export.write_text("{}")
+
+        rotate_auto_snapshots(backup_dir, keep=5)
+
+        remaining_auto = sorted(backup_dir.glob("memory-auto-*.db"))
+        assert len(remaining_auto) == 5
+        # The oldest auto snapshot (index 0) was deleted; the rest survive.
+        assert auto_paths[0] not in remaining_auto
+        for p in auto_paths[1:]:
+            assert p in remaining_auto
+
+        assert manual.exists()
+        assert export.exists()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# -- Review fixes: deprecated_at roundtrip, broken-snapshot cleanup ----------
+
+
+def test_import_preserves_deprecated_observations():
+    tmp = tempfile.mkdtemp()
+    src = _make_db(tmp, "src.db")
+    dst = _make_db(tmp, "dst.db")
+    try:
+        ids = _populate(src)
+        src.deprecate_observation(ids["observation"], reason="unit test")
+        data = export_data(src)
+        assert data["observations"][0]["deprecated_at"] is not None
+
+        import_data(dst, data)
+        row = dst.conn.execute(
+            "SELECT deprecated_at FROM observations WHERE id = ?",
+            (ids["observation"],),
+        ).fetchone()
+        assert row is not None and row["deprecated_at"] is not None
+        # Excluded from reads and from the FTS index
+        assert dst.get_observations("bank-a") == []
+        fts = dst.conn.execute(
+            "SELECT COUNT(*) FROM fts_observations WHERE id = ?",
+            (ids["observation"],),
+        ).fetchone()[0]
+        assert fts == 0
+    finally:
+        src.close()
+        dst.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_import_accepts_pre_deprecation_exports():
+    tmp = tempfile.mkdtemp()
+    src = _make_db(tmp, "src.db")
+    dst = _make_db(tmp, "dst.db")
+    try:
+        _populate(src)
+        data = export_data(src)
+        for obs in data["observations"]:
+            del obs["deprecated_at"]  # export written by an older version
+
+        import_data(dst, data)
+        assert len(dst.get_observations("bank-a")) == 1
+    finally:
+        src.close()
+        dst.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_failed_snapshot_leaves_no_output_file():
+    tmp = tempfile.mkdtemp()
+    try:
+        bad_db = Path(tmp) / "garbage.db"
+        bad_db.write_bytes(b"this is not a sqlite database at all")
+        out = Path(tmp) / "memory-auto-19700101-000000.db"
+        with pytest.raises(sqlite3.DatabaseError):
+            snapshot_db(bad_db, out)
+        assert not out.exists()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

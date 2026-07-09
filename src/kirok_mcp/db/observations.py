@@ -18,8 +18,14 @@ class ObservationMixin:
         content: str,
         source_memory_ids: list[str],
         embedding: list[float] | None = None,
+        commit: bool = True,
     ) -> str:
-        """Insert a new observation. Returns the observation ID."""
+        """Insert a new observation. Returns the observation ID.
+
+        ``commit=False`` runs the writes without committing so a caller
+        (consolidation) can batch several observation changes plus the
+        memory-consolidated mark into a single atomic transaction.
+        """
         assert self.conn is not None
 
         obs_id = str(uuid4())
@@ -47,7 +53,8 @@ class ObservationMixin:
                 "vec_observations", "observation_id", obs_id, bank_id, emb_blob
             )
 
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
@@ -60,8 +67,13 @@ class ObservationMixin:
         content: str,
         source_memory_ids: list[str],
         embedding: list[float] | None = None,
+        commit: bool = True,
     ) -> bool:
-        """Update an existing observation. Returns True if found."""
+        """Update an existing observation. Returns True if found.
+
+        ``commit=False`` defers the commit so consolidation can batch this into
+        one atomic transaction (see ``insert_observation``).
+        """
         assert self.conn is not None
 
         row = self.conn.execute(
@@ -101,7 +113,64 @@ class ObservationMixin:
                 emb_blob,
             )
 
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+        return True
+
+    def deprecate_observation(
+        self, observation_id: str, reason: str = "", commit: bool = True
+    ) -> bool:
+        """Soft-delete an observation: stamp ``deprecated_at`` and drop it from
+        the FTS and vec search indexes, but keep the row.
+
+        Consolidation uses this instead of ``delete_observation`` so a mistaken
+        LLM delete does not irreversibly destroy knowledge — the row survives and
+        an audit event records which observation was retired and why. A
+        deprecated observation is excluded from every read path (search, listing,
+        stats, consolidation's existing set), so it disappears from results just
+        like a hard delete would. Returns True if a live observation was found.
+
+        ``commit=False`` batches this into consolidation's single transaction;
+        the audit event is written on the same connection so it can never persist
+        without the deprecation (or vice versa).
+        """
+        assert self.conn is not None
+
+        row = self.conn.execute(
+            "SELECT bank_id FROM observations "
+            "WHERE id = ? AND deprecated_at IS NULL",
+            (observation_id,),
+        ).fetchone()
+        if not row:
+            return False
+
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            self.conn.execute(
+                "UPDATE observations SET deprecated_at = ? WHERE id = ?",
+                (now, observation_id),
+            )
+            self.conn.execute(
+                "DELETE FROM fts_observations WHERE id = ?", (observation_id,)
+            )
+            if self._vec_available:
+                self.conn.execute(
+                    "DELETE FROM vec_observations WHERE observation_id = ?",
+                    (observation_id,),
+                )
+            self._record_event(
+                row["bank_id"],
+                "observation_deprecated",
+                f"{observation_id}: {reason}",
+                commit=False,
+            )
+
+            if commit:
+                self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
@@ -191,7 +260,7 @@ class ObservationMixin:
 
         rows = self.conn.execute(
             """SELECT * FROM observations
-               WHERE bank_id = ?
+               WHERE bank_id = ? AND deprecated_at IS NULL
                ORDER BY updated_at DESC
                LIMIT ?""",
             (bank_id, limit),
