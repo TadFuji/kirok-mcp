@@ -33,7 +33,15 @@ def _project_dir() -> Path:
 
 
 def _env_path() -> Path:
-    return _project_dir() / ".env"
+    """The .env the server would use: dev-checkout first, else ~/.kirok/.env.
+
+    Mirrors server.py's load order — a dev checkout keeps its key next to
+    pyproject.toml; an installed package (pip/uvx) reads ~/.kirok/.env.
+    """
+    project = _project_dir() / ".env"
+    if project.exists():
+        return project
+    return Path.home() / ".kirok" / ".env"
 
 
 def _resolve_db_path(raw_path: str | None = None) -> Path:

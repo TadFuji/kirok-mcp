@@ -31,7 +31,13 @@ from kirok_mcp.llm import LLMClient
 
 _pkg_dir = os.path.dirname(os.path.abspath(__file__))
 _project_dir = os.path.dirname(os.path.dirname(_pkg_dir))
+# Dev checkout: .env sits next to pyproject.toml. For an installed package
+# (pip/uvx) that path points inside site-packages' parent where no .env
+# exists, so ~/.kirok/.env (alongside the database) is tried as well.
+# load_dotenv never overrides variables already set in the process env, so an
+# explicit env var in the MCP client config always wins.
 load_dotenv(os.path.join(_project_dir, ".env"))
+load_dotenv(os.path.join(os.path.expanduser("~"), ".kirok", ".env"))
 
 DB_PATH = os.environ.get("KIROK_DB_PATH", None)
 REFLECT_TIMEOUT = int(os.environ.get("KIROK_REFLECT_TIMEOUT", "300"))
