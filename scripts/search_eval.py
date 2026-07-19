@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Measure Kirok recall quality against a golden query set.
 
-Runs each golden query through the REAL recall pipeline (the same
+Runs each golden query through the REAL memory-search pipeline (the same
 ``hybrid_search_memories`` the MCP server uses — semantic KNN + FTS keyword
 search merged with RRF) and reports hit@k and MRR. This is the yardstick for
 tuning search parameters (dedup threshold, RRF k, FTS behavior): without it,
 no change to search can be shown to help or hurt.
+
+Scope note: this measures the memory fusion layer only. The full KIROK_recall
+reply additionally prepends observation hits and drops memories already folded
+into a shown observation, so a case whose answer lives in an observation can
+score MISS here while ranking first in the actual recall output (and vice
+versa for observation-folded memories).
 
 Golden set format (JSON, UTF-8):
 
@@ -163,7 +169,11 @@ async def _main() -> None:
         if o["rank"] is None:
             print(f"            top result was: {o['top_id']}")
 
-    summary = summarize([o["rank"] for o in outcomes], ks=(1, 5, args.limit))
+    # Dedup + sort so --limit 5 doesn't compute hit@5 twice and --limit 3
+    # doesn't print a hit@5 column that is really hit@3.
+    summary = summarize(
+        [o["rank"] for o in outcomes], ks=tuple(sorted({1, 5, args.limit}))
+    )
     print(
         f"\nhit@1: {summary['hit@1']:.2f}  "
         f"hit@5: {summary['hit@5']:.2f}  "

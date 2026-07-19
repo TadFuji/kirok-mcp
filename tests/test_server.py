@@ -268,6 +268,11 @@ class _FakeRecallDB:
             }
         ][:top_k]
 
+    def fts_search_observations(
+        self, bank_id: str, query: str, limit: int = 5
+    ) -> list[dict]:
+        return []
+
 
 class _FakeRecallEmbedder:
     def __init__(self):

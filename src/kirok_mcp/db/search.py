@@ -93,8 +93,9 @@ class SearchMixin:
     ) -> list[dict[str, Any]]:
         """Exact substring search for tokens the trigram index cannot serve.
 
-        A row must contain ALL tokens (mirroring FTS5's implicit AND across
-        quoted tokens) in its content, entities, or keywords. Matching runs
+        A row matching ANY token is a hit (mirroring ``_sanitize_fts_query``,
+        which OR-joins its quoted tokens) in its content, entities, or
+        keywords. Matching runs
         against fts_memories rather than memories because the source table
         stores entities/keywords as ASCII-escaped JSON (json.dumps default),
         where a CJK substring can never match; the FTS table holds the same
@@ -105,13 +106,13 @@ class SearchMixin:
         """
         assert self.conn is not None
 
-        conditions = ["m.bank_id = ?"]
+        token_conditions = []
         params: list[Any] = [bank_id]
         for token in tokens:
             pattern = "%" + (
                 token.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
             ) + "%"
-            conditions.append(
+            token_conditions.append(
                 r"(f.content LIKE ? ESCAPE '\' "
                 r"OR f.entities LIKE ? ESCAPE '\' "
                 r"OR f.keywords LIKE ? ESCAPE '\')"
@@ -123,7 +124,7 @@ class SearchMixin:
             f"""SELECT m.id, m.content, m.timestamp, m.entities
                 FROM memories m
                 JOIN fts_memories f ON f.id = m.id
-                WHERE {' AND '.join(conditions)}
+                WHERE m.bank_id = ? AND ({' OR '.join(token_conditions)})
                 ORDER BY m.timestamp DESC
                 LIMIT ?""",
             params,
@@ -139,6 +140,88 @@ class SearchMixin:
             }
             for r in rows
         ]
+
+    def fts_search_observations(
+        self, bank_id: str, query: str, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Keyword search (FTS5 BM25 + short-token LIKE rescue) over observations.
+
+        The keyword counterpart of ``vec_search_observations``, so consolidated
+        knowledge is reachable by literal terms too — previously the
+        fts_observations index was maintained on every write but never queried,
+        leaving observations reachable only through the semantic floor. Result
+        dicts match the observation search shape
+        (id/content/timestamp/source_memory_ids) plus a BM25 ``score`` (0.0 for
+        LIKE-rescue rows), so RRF can fuse them with the semantic hits.
+        """
+        assert self.conn is not None
+
+        results: list[dict[str, Any]] = []
+        safe_query = _sanitize_fts_query(query)
+        if safe_query is not None:
+            try:
+                rows = self.conn.execute(
+                    """SELECT fts.id, o.content, bm25(fts_observations) AS score,
+                              o.updated_at, o.source_memory_ids
+                       FROM fts_observations fts
+                       JOIN observations o ON o.id = fts.id
+                       WHERE fts_observations MATCH ? AND fts.bank_id = ?
+                         AND o.deprecated_at IS NULL
+                       ORDER BY score
+                       LIMIT ?""",
+                    (safe_query, bank_id, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+            results = [
+                {
+                    "id": r["id"],
+                    "content": r["content"],
+                    "score": r["score"],
+                    "timestamp": r["updated_at"],
+                    "source_memory_ids": _decode_json_list(r["source_memory_ids"]),
+                }
+                for r in rows
+            ]
+
+        short_tokens = _short_cjk_fts_tokens(query)
+        if short_tokens:
+            seen = {r["id"] for r in results}
+            token_conditions = []
+            params: list[Any] = [bank_id]
+            for token in short_tokens:
+                pattern = "%" + (
+                    token.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+                ) + "%"
+                token_conditions.append(r"f.content LIKE ? ESCAPE '\'")
+                params.append(pattern)
+            params.append(limit)
+            rows = self.conn.execute(
+                f"""SELECT o.id, o.content, o.updated_at, o.source_memory_ids
+                    FROM observations o
+                    JOIN fts_observations f ON f.id = o.id
+                    WHERE o.bank_id = ? AND o.deprecated_at IS NULL
+                      AND ({' OR '.join(token_conditions)})
+                    ORDER BY o.updated_at DESC
+                    LIMIT ?""",
+                params,
+            ).fetchall()
+            for r in rows:
+                if r["id"] not in seen:
+                    results.append({
+                        "id": r["id"],
+                        "content": r["content"],
+                        "score": 0.0,
+                        "timestamp": r["updated_at"],
+                        "source_memory_ids": _decode_json_list(
+                            r["source_memory_ids"]
+                        ),
+                    })
+                    seen.add(r["id"])
+
+        # MATCH and the LIKE rescue each contribute up to `limit` rows; cap the
+        # merged list so callers get at most what they asked for.
+        return results[:limit]
 
     def get_all_embeddings(self, bank_id: str) -> list[dict[str, Any]]:
         """Load all embeddings for a bank (for brute-force cosine similarity)."""
@@ -176,7 +259,7 @@ class SearchMixin:
         filter into SQL so time-filtered recall (which must stay on brute force
         because vec0 cannot filter by timestamp) loads only the candidates it
         needs instead of the whole bank. Bounds are inclusive (>= / <=), matching
-        the previous in-Python filter and ``search_by_timestamp``.
+        the previous in-Python filter.
         """
         assert self.conn is not None
 
@@ -238,9 +321,9 @@ class SearchMixin:
         Falls back to brute-force cosine when: the extension is unavailable, the
         KNN errors, or the vec table returns fewer hits than the bank actually
         holds (a sign vec_memories is out of sync). Each result mirrors
-        ``get_all_embeddings`` entries plus a cosine ``similarity``
-        (``1 - distance``, clamped >= 0) so RRF and the dedup threshold keep
-        working unchanged.
+        ``get_all_embeddings`` entries (minus the raw ``embedding``, which no
+        consumer reads) plus a cosine ``similarity`` (``1 - distance``, clamped
+        >= 0) so RRF and the dedup threshold keep working unchanged.
         """
         assert self.conn is not None
 
@@ -290,8 +373,12 @@ class SearchMixin:
         ids = list(distances.keys())
         placeholders = ",".join("?" for _ in ids)
         # ids come from this bank's vec partition, so the join stays bank-scoped.
+        # The embedding BLOB is deliberately NOT selected: no consumer of
+        # vec_search results reads it (recall/dedup/reflect use content and
+        # similarity only), and deserializing top_k × 3072 floats per call is
+        # pure waste.
         mem_rows = self.conn.execute(
-            f"""SELECT id, content, embedding, timestamp,
+            f"""SELECT id, content, timestamp,
                        context, entities, keywords
                 FROM memories
                 WHERE id IN ({placeholders})""",
@@ -304,9 +391,6 @@ class SearchMixin:
             results.append({
                 "id": r["id"],
                 "content": r["content"],
-                "embedding": (
-                    _deserialize_vector(r["embedding"]) if r["embedding"] else []
-                ),
                 "timestamp": r["timestamp"],
                 "context": r["context"],
                 "entities": json.loads(r["entities"]),

@@ -100,6 +100,9 @@ class _RecallDedupDB:
                  "timestamp": "t", "source_memory_ids": ["mem-1"],
                  "similarity": 0.9}][:top_k]
 
+    def fts_search_observations(self, bank_id, query, limit=5):
+        return []
+
 
 class _RecallEmbedder:
     async def embed(self, text, task_type=""):

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from kirok_mcp.db.base import _serialize_vector
+from kirok_mcp.db.base import _fts_text, _serialize_vector
 from kirok_mcp.embeddings import EMBEDDING_DIM
 
 
@@ -46,7 +46,7 @@ class ObservationMixin:
             self.conn.execute(
                 """INSERT INTO fts_observations (id, bank_id, content)
                    VALUES (?, ?, ?)""",
-                (obs_id, bank_id, content),
+                (obs_id, bank_id, _fts_text(content)),
             )
 
             self._sync_vec_row(
@@ -102,7 +102,7 @@ class ObservationMixin:
             self.conn.execute(
                 """INSERT INTO fts_observations (id, bank_id, content)
                    VALUES (?, ?, ?)""",
-                (observation_id, row["bank_id"], content),
+                (observation_id, row["bank_id"], _fts_text(content)),
             )
 
             self._sync_vec_row(

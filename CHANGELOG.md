@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-19
+
+### Fixed
+- **A consolidation LLM failure can no longer silently retire memories.** `LLMClient.consolidate` used to swallow every error (API failure after retries, unparseable response) and return an empty action list; the consolidation engine then marked the whole batch `consolidated_at` with zero observations produced and no failure recorded — those memories were permanently skipped. It now raises: the auto path records an `auto_consolidation` failure (visible in `KIROK_stats`) and leaves the batch pending for the next run; manual `KIROK_consolidate` reports the failure and records `manual_consolidation`
+- **Concurrent retains can no longer double-consolidate the same batch.** Two retains passing the debounce together could both read the same unconsolidated memories and produce near-duplicate observations. Consolidation is now serialized per bank with an `asyncio.Lock`; the second run re-reads the (now empty) pending set and exits
+- **The dedup merge and its audit event now commit as one transaction.** Previously the merged content committed first and the `memory_dedup_update` audit row (holding the pre-merge content) committed separately — a crash between the two persisted the merge with no recoverable trace of the original, violating the audit guarantee
+- A failure in the consolidation-debounce count query is now recorded to `system_events` (`consolidation_count`) instead of only being logged, matching every other background failure
+- `scripts/search_eval.py`: `--limit 5` no longer computes hit@5 twice, and `--limit 3` no longer prints a hit@5 column that was really hit@3; its docstring now states that it measures the memory fusion layer, not the full observation-aware recall reply
+
+### Changed
+- **Observations are now reachable by keyword.** The `fts_observations` index was written on every insert/update but never queried — consolidated knowledge was only findable through the semantic floor, so an observation whose cosine landed at e.g. 0.60 was invisible even on an exact keyword match. `KIROK_recall` now runs a keyword search (BM25 + short-CJK LIKE rescue, floor-exempt like the memory side) and fuses it with the semantic hits via RRF
+- **FTS text is NFKC-normalized on both the index and the query side**, so width variants now match: full-width ASCII (ＭＣＰ vs MCP) and half-width katakana (ﾊﾞｸﾞ vs バグ) were distinct code points that could never MATCH or LIKE each other. Existing databases rebuild their FTS tables once on the next startup (gated by `PRAGMA user_version`); source-table content is stored untouched
+- **RRF now fuses deeper candidate pools** (`max(limit*3, 30)` per source instead of `limit`): an item ranked just outside `limit` in both sources — a classic true hit that fusion exists to promote — was previously truncated out of both lists before RRF could see it
+- **The short-CJK LIKE rescue is now OR-joined across tokens**, matching the OR-joined FTS MATCH semantics. Previously it required every short token to appear (`京都 大阪` matched only rows containing both), while 3+ char queries used OR — an inconsistency that hid partial matches
+- `vec_search` no longer fetches and deserializes each hit's embedding BLOB (top_k × 3072 floats per call) — no consumer of its results reads it
+- New partial index `idx_memories_unconsolidated` makes the per-retain consolidation-debounce count and `get_unconsolidated_memories` index-only instead of scanning the bank's rows
+- `set_bank_config` uses an upsert (`ON CONFLICT DO UPDATE`) instead of SELECT-then-INSERT, removing a cross-process race on first config write
+- `KIROK_retain`'s dedup-UPDATE path now runs its re-extraction and re-embedding concurrently (`asyncio.gather`), like the ADD path already did
+
+### Removed
+- `MemoryDB.search_by_timestamp` — dead code since 1.3.0 made time-filtered recall filter FTS hits directly; nothing called it
+
 ## [1.3.0] - 2026-07-10
 
 ### Changed

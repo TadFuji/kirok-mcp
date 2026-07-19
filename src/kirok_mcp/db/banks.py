@@ -210,21 +210,24 @@ class BankMixin:
         if existing:
             new_rm = retain_mission if retain_mission is not None else existing["retain_mission"]
             new_om = observations_mission if observations_mission is not None else existing["observations_mission"]
-            self.conn.execute(
-                """UPDATE bank_config
-                   SET retain_mission = ?, observations_mission = ?, updated_at = ?
-                   WHERE bank_id = ?""",
-                (new_rm, new_om, now, bank_id),
-            )
         else:
             new_rm = retain_mission or ""
             new_om = observations_mission or ""
-            self.conn.execute(
-                """INSERT INTO bank_config
-                   (bank_id, retain_mission, observations_mission, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (bank_id, new_rm, new_om, now, now),
-            )
+
+        # Upsert instead of a SELECT-then-INSERT branch: two processes racing
+        # on a fresh bank would otherwise both see "no row" and the second
+        # INSERT would die on the primary key. The SELECT above only resolves
+        # the keep-existing-value semantics for omitted fields.
+        self.conn.execute(
+            """INSERT INTO bank_config
+               (bank_id, retain_mission, observations_mission, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(bank_id) DO UPDATE SET
+                   retain_mission = excluded.retain_mission,
+                   observations_mission = excluded.observations_mission,
+                   updated_at = excluded.updated_at""",
+            (bank_id, new_rm, new_om, now, now),
+        )
 
         self.conn.commit()
         return {

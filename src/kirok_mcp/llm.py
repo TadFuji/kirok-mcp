@@ -202,6 +202,14 @@ Respond with ONLY valid JSON, no markdown formatting, no explanation."""
               - content: The observation text (or deletion reason for "delete")
               - observation_id: (for "update"/"delete") ID of observation
               - source_memory_ids: List of memory IDs that support this
+
+        Raises:
+            Exception: On API failure (after retries) or an unusable LLM
+            response. Failures must NOT be reported as an empty action list:
+            the caller marks source memories consolidated based on the return
+            value, so a swallowed error would silently retire memories that
+            were never consolidated. An empty list always means the LLM
+            genuinely decided nothing was worth capturing.
         """
         if not new_memories:
             return []
@@ -251,52 +259,50 @@ If no observations should be created, updated, or deleted, return an empty array
 
 Respond with ONLY valid JSON, no markdown formatting, no explanation."""
 
-        try:
-            response = await with_retry(
-                lambda: self.client.aio.models.generate_content(
-                    model=LLM_MODEL,
-                    contents=prompt,
-                ),
-                logger=logger,
+        response = await with_retry(
+            lambda: self.client.aio.models.generate_content(
+                model=LLM_MODEL,
+                contents=prompt,
+            ),
+            logger=logger,
+        )
+        self.api_calls += 1
+
+        result = _parse_json_response(response.text)
+        if result is None:
+            # Raise instead of returning [] — see the docstring: an empty list
+            # would make the caller mark memories consolidated with nothing
+            # produced, silently and permanently.
+            raise ValueError("Consolidation LLM returned unparseable response")
+
+        if not isinstance(result, list):
+            raise ValueError(
+                f"Consolidation LLM returned non-array: {type(result).__name__}"
             )
-            self.api_calls += 1
 
-            result = _parse_json_response(response.text)
-            if result is None:
-                logger.warning("Consolidation LLM returned unparseable response")
-                return []
+        # Validate each item
+        validated = []
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            action = item.get("action")
+            content = item.get("content")
+            if action not in ("create", "update", "delete") or not content:
+                continue
+            if action == "update" and not item.get("observation_id"):
+                # Missing observation_id for update — treat as create
+                item["action"] = "create"
+            if action == "delete" and not item.get("observation_id"):
+                # Cannot delete without target — skip
+                continue
+            validated.append({
+                "action": item["action"],
+                "content": item["content"],
+                "observation_id": item.get("observation_id", ""),
+                "source_memory_ids": item.get("source_memory_ids", []),
+            })
 
-            if not isinstance(result, list):
-                logger.warning("Consolidation LLM returned non-array: %s", type(result))
-                return []
-
-            # Validate each item
-            validated = []
-            for item in result:
-                if not isinstance(item, dict):
-                    continue
-                action = item.get("action")
-                content = item.get("content")
-                if action not in ("create", "update", "delete") or not content:
-                    continue
-                if action == "update" and not item.get("observation_id"):
-                    # Missing observation_id for update — treat as create
-                    item["action"] = "create"
-                if action == "delete" and not item.get("observation_id"):
-                    # Cannot delete without target — skip
-                    continue
-                validated.append({
-                    "action": item["action"],
-                    "content": item["content"],
-                    "observation_id": item.get("observation_id", ""),
-                    "source_memory_ids": item.get("source_memory_ids", []),
-                })
-
-            return validated
-
-        except Exception as e:
-            logger.error("Consolidation failed: %s", e)
-            return []
+        return validated
 
     # ── Importance Evaluation ─────────────────────────────────────────
 

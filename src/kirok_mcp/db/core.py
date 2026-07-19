@@ -35,7 +35,17 @@ class MemoryDB(
         self._vec_available: bool = False
 
     def connect(self) -> None:
-        """Open database connection and initialize schema."""
+        """Open database connection and initialize schema.
+
+        CONCURRENCY CONTRACT: this single connection is shared by every
+        coroutine in the server's event loop. That is only safe because no db
+        method (and no ``commit=False`` batch, e.g. consolidation) awaits
+        between its first write and its commit — the event loop cannot switch
+        tasks mid-transaction. If you ever add an ``await`` inside a write
+        path, another coroutine's ``commit()`` can capture the half-applied
+        batch. Keep write paths synchronous, or give writers a dedicated
+        connection behind a lock.
+        """
         self.conn = sqlite3.connect(str(self.db_path), timeout=_BUSY_TIMEOUT_MS / 1000)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")

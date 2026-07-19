@@ -7,6 +7,7 @@ database path resolution. Pure functions and constants only.
 import json
 import re
 import struct
+import unicodedata
 from pathlib import Path
 
 
@@ -39,6 +40,21 @@ _CJK_CONTENT_CHAR = re.compile(
     "゠-ヿ"  # katakana
     "]"
 )
+
+
+def _fts_text(text: str | None) -> str | None:
+    """NFKC-normalize text bound for (or matched against) the FTS index.
+
+    Width variants are distinct code points (half-width katakana "ﾊﾞｸﾞ" vs
+    "バグ", full-width ASCII "ＭＣＰ" vs "MCP"), so without a shared
+    normalization a stored/query width mismatch can never MATCH or LIKE.
+    Applied on every FTS write path AND on query tokenization — both sides
+    must agree or the normalization is useless. Source-table content is
+    stored untouched; only the FTS copies are normalized.
+    """
+    if not text:
+        return text
+    return unicodedata.normalize("NFKC", text)
 
 
 def _join_json_list(raw: str) -> str:
@@ -81,6 +97,11 @@ def _clean_fts_tokens(query: str) -> list[str]:
     """
     if not query or not query.strip():
         return []
+
+    # NFKC first so query tokens live in the same width-normalized space as
+    # the FTS index (see _fts_text). Also folds half-width katakana into the
+    # katakana block, so short-token CJK detection sees it.
+    query = unicodedata.normalize("NFKC", query)
 
     # Remove FTS5 special characters: *, ^, ", NEAR()
     cleaned = query.replace('"', ' ').replace('*', ' ').replace('^', ' ')

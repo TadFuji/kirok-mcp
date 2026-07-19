@@ -5,7 +5,7 @@ English | [日本語](README.ja.md)
 [![tests](https://github.com/TadFuji/kirok-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/TadFuji/kirok-mcp/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org)
-[![Version 1.3.0](https://img.shields.io/badge/version-1.3.0-blue.svg)](CHANGELOG.md)
+[![Version 1.4.0](https://img.shields.io/badge/version-1.4.0-blue.svg)](CHANGELOG.md)
 
 **Persistent memory for AI agents, over MCP.** Kirok (記録, "record") is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives an agent a durable, searchable memory: **Retain** what matters, **Recall** it with hybrid semantic + keyword search, and **Reflect** to distil accumulated memories into reusable insights. A background consolidation loop turns raw memories into higher-level *observations* on its own.
 
@@ -163,7 +163,9 @@ Everything is set via environment variables (typically in `.env`). Only `GEMINI_
 
 ## 🔍 Search quality
 
-Recall runs semantic KNN and FTS5 BM25 in parallel and fuses them with Reciprocal Rank Fusion (`k=60`). Short Japanese keyword queries get special handling: 1–2 character kanji/katakana tokens fall below the trigram tokenizer's 3-char window and can never `MATCH`, so they're rescued by an exact-substring `LIKE` supplement appended after the BM25 hits (hiragana-only short tokens stay excluded — function words would substring-match half a bank).
+Recall runs semantic KNN and FTS5 BM25 in parallel and fuses them with Reciprocal Rank Fusion (`k=60`). Short Japanese keyword queries get special handling: 1–2 character kanji/katakana tokens fall below the trigram tokenizer's 3-char window and can never `MATCH`, so they're rescued by an exact-substring `LIKE` supplement appended after the BM25 hits (hiragana-only short tokens stay excluded — function words would substring-match half a bank; tokens are OR-joined, matching the MATCH side).
+
+Three details keep the hybrid honest: each source is fetched deeper than the final page (`max(limit*3, 30)`) so RRF can promote an item ranked just outside the cut in both lists; all FTS text is NFKC-normalized on both the index and query side, so width variants (ＭＣＰ vs MCP, ﾊﾞｸﾞ vs バグ) actually match; and observations get the same hybrid treatment as memories — semantic hits floored, keyword hits floor-exempt — instead of being reachable only through the semantic floor.
 
 **The similarity floor is calibrated on real data.** A naive cosine threshold doesn't work here: on live `gemini-embedding-001` vectors the distribution is narrow — off-topic queries score **0.55–0.62** against unrelated banks while true hits score **0.66–0.73**. So the usable floor sits *just* above the off-topic ceiling, at **0.62**. Without it, an unrelated query still returns a full page of memories from any non-empty bank (context pollution); much lower and the floor filters nothing (the old hardcoded `0.4` sat below even off-topic scores). FTS keyword hits bypass the floor entirely — a literal term match is independent evidence, not a weak vector score.
 
@@ -177,7 +179,8 @@ uv run python scripts/search_eval.py my_golden.json --limit 10
 ## 🛡️ Reliability
 
 - **Atomic consolidation.** Every create/update embedding is generated *before* any DB write; all observation changes plus the "consolidated" mark commit in a single transaction. A failure at any step leaves the database exactly as it was, with the source memories still pending for a later retry — never a half-applied batch.
-- **Soft deletes with audit trail.** An observation the consolidation LLM decides to remove is stamped `deprecated_at` (excluded from search/list/stats) instead of destroyed, and a dedup UPDATE records the pre-merge content first — both logged to `system_events` so a bad LLM decision is recoverable, not silent data loss.
+- **Failures surface, never fake success.** A consolidation LLM failure raises and is recorded to `system_events` — the batch stays pending for a later retry, instead of being silently marked consolidated with nothing produced. Runs are serialized per bank, so two retains landing together cannot double-process the same batch into duplicate observations.
+- **Soft deletes with audit trail.** An observation the consolidation LLM decides to remove is stamped `deprecated_at` (excluded from search/list/stats) instead of destroyed, and a dedup UPDATE records the pre-merge content in the same transaction as the merge itself — both logged to `system_events` so a bad LLM decision is recoverable, not silent data loss.
 - **Startup auto-snapshot.** On launch, if the newest auto-snapshot is older than `KIROK_AUTO_SNAPSHOT_HOURS`, a `VACUUM INTO` + `integrity_check` snapshot is written under `~/.kirok/backups/`, keeping the newest `KIROK_SNAPSHOT_KEEP` generations. A snapshot that fails partway leaves no broken file behind, and manual backups are never rotated.
 - **Concurrency.** Connections set `PRAGMA busy_timeout=30000`, so a second MCP client waits out a busy writer instead of failing with `database is locked`.
 - **Fail-open background work.** Auto-consolidation and mental-model refresh run behind `retain` and can never fail it — errors are swallowed, recorded to `system_events`, and surfaced via `KIROK_stats` so silent degradation stays visible.
@@ -216,7 +219,7 @@ The suite is fully offline — importing `kirok_mcp.server` is side-effect-free 
 
 - [docs/architecture.md](docs/architecture.md) — internal design, data model, consolidation engine
 - [docs/tools-reference.md](docs/tools-reference.md) — full parameter reference for all 19 tools
-- [CHANGELOG.md](CHANGELOG.md) — version history (current: 1.3.0)
+- [CHANGELOG.md](CHANGELOG.md) — version history (current: 1.4.0)
 
 ## 📄 License
 

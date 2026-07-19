@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from kirok_mcp.db.base import _serialize_vector
+from kirok_mcp.db.base import _fts_text, _serialize_vector
 from kirok_mcp.embeddings import EMBEDDING_DIM
 
 
@@ -55,11 +55,18 @@ class MemoryMixin:
                 ),
             )
 
-            # Insert into FTS5 index
+            # Insert into FTS5 index (NFKC-normalized copies; see _fts_text)
             self.conn.execute(
                 """INSERT INTO fts_memories (id, bank_id, content, entities, keywords, context)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (memory_id, bank_id, content, " ".join(ent), " ".join(kw), context),
+                (
+                    memory_id,
+                    bank_id,
+                    _fts_text(content),
+                    _fts_text(" ".join(ent)),
+                    _fts_text(" ".join(kw)),
+                    _fts_text(context),
+                ),
             )
 
             self._sync_vec_row("vec_memories", "memory_id", memory_id, bank_id, emb_blob)
@@ -168,8 +175,14 @@ class MemoryMixin:
         context: str | None = None,
         embedding: list[float] | None = None,
         metadata: dict[str, Any] | None = None,
+        commit: bool = True,
     ) -> bool:
-        """Update an existing memory. Returns True if found and updated."""
+        """Update an existing memory. Returns True if found and updated.
+
+        ``commit=False`` leaves the transaction open so the caller can fold
+        follow-up writes (e.g. the dedup audit event) into the same atomic
+        commit; the caller then owns the final commit/rollback.
+        """
         assert self.conn is not None
 
         row = self.conn.execute(
@@ -204,7 +217,7 @@ class MemoryMixin:
                 ),
             )
 
-            # Update FTS index
+            # Update FTS index (NFKC-normalized copies; see _fts_text)
             self.conn.execute("DELETE FROM fts_memories WHERE id = ?", (memory_id,))
             self.conn.execute(
                 """INSERT INTO fts_memories (id, bank_id, content, entities, keywords, context)
@@ -212,10 +225,10 @@ class MemoryMixin:
                 (
                     memory_id,
                     row["bank_id"],
-                    new_content,
-                    " ".join(new_entities),
-                    " ".join(new_keywords),
-                    new_context,
+                    _fts_text(new_content),
+                    _fts_text(" ".join(new_entities)),
+                    _fts_text(" ".join(new_keywords)),
+                    _fts_text(new_context),
                 ),
             )
 
@@ -223,7 +236,8 @@ class MemoryMixin:
                 "vec_memories", "memory_id", memory_id, row["bank_id"], new_emb_blob
             )
 
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
@@ -273,53 +287,6 @@ class MemoryMixin:
             raise
 
         return True
-
-    def search_by_timestamp(
-        self,
-        bank_id: str,
-        time_min: str | None = None,
-        time_max: str | None = None,
-        limit: int = 20,
-    ) -> list[dict[str, Any]]:
-        """Search memories within a time range."""
-        assert self.conn is not None
-
-        conditions = ["bank_id = ?"]
-        params: list[Any] = [bank_id]
-
-        if time_min:
-            conditions.append("timestamp >= ?")
-            params.append(time_min)
-        if time_max:
-            conditions.append("timestamp <= ?")
-            params.append(time_max)
-
-        params.append(limit)
-        where = " AND ".join(conditions)
-
-        rows = self.conn.execute(
-            f"""SELECT id, content, entities, keywords, context,
-                       timestamp, created_at, metadata
-                FROM memories
-                WHERE {where}
-                ORDER BY timestamp DESC
-                LIMIT ?""",
-            params,
-        ).fetchall()
-
-        return [
-            {
-                "id": r["id"],
-                "content": r["content"],
-                "entities": json.loads(r["entities"]),
-                "keywords": json.loads(r["keywords"]),
-                "context": r["context"],
-                "timestamp": r["timestamp"],
-                "created_at": r["created_at"],
-                "metadata": json.loads(r["metadata"]),
-            }
-            for r in rows
-        ]
 
     def get_unconsolidated_memories(
         self, bank_id: str, limit: int = 50

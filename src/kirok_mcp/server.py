@@ -58,6 +58,11 @@ _db: MemoryDB | None = None
 _embedder: EmbeddingClient | None = None
 _llm: LLMClient | None = None
 
+# Per-bank locks serializing consolidation runs. Without them, two retains
+# landing close together can both pass the debounce, read the same
+# unconsolidated batch, and produce duplicate observations from it.
+_consolidation_locks: dict[str, asyncio.Lock] = {}
+
 mcp = FastMCP("kirok_mcp")
 
 
@@ -136,8 +141,19 @@ async def _run_consolidation(bank_id: str) -> str:
     and creates/updates/deletes observations as needed. Also auto-refreshes
     mental models with auto_refresh=True.
 
+    Serialized per bank: a second concurrent run waits, then re-reads the
+    (now empty) unconsolidated set and exits — instead of double-processing
+    the same batch into duplicate observations. A timeout cancellation from
+    ``asyncio.wait_for`` releases the lock via ``async with``.
+
     Returns a summary string of what happened.
     """
+    lock = _consolidation_locks.setdefault(bank_id, asyncio.Lock())
+    async with lock:
+        return await _run_consolidation_locked(bank_id)
+
+
+async def _run_consolidation_locked(bank_id: str) -> str:
     new_memories = _db.get_unconsolidated_memories(bank_id, limit=50)
     if not new_memories:
         return "No unconsolidated memories found."
@@ -280,6 +296,12 @@ async def _maybe_consolidate(bank_id: str) -> None:
         logger.warning(
             "Could not count unconsolidated memories for '%s': %s", bank_id, e
         )
+        # Surface the skip in KIROK_stats like every other background failure;
+        # best-effort — if even the event insert fails, stay fail-open.
+        try:
+            _db.record_failure(bank_id, "consolidation_count", str(e))
+        except Exception:
+            pass
         return
 
     if pending < CONSOLIDATION_BATCH_SIZE:
@@ -361,10 +383,18 @@ async def _retain_memory(
                     "",
                 )
 
-                # Re-extract entities for merged content
-                merged_extraction = await _llm.extract_entities(merged, mission=mission)
-                merged_emb = await _embedder.embed(merged, task_type=TASK_TYPE_DOCUMENT)
+                # Re-extract entities for merged content (concurrently with the
+                # merged embedding — independent Gemini round-trips).
+                merged_extraction, merged_emb = await asyncio.gather(
+                    _llm.extract_entities(merged, mission=mission),
+                    _embedder.embed(merged, task_type=TASK_TYPE_DOCUMENT),
+                )
 
+                # The merge and its audit row commit as ONE transaction
+                # (commit=False + the event's commit=True): a crash between
+                # them could otherwise persist the merge with no audit row,
+                # making the pre-merge content unrecoverable — exactly what
+                # the audit exists to prevent.
                 updated = _db.update_memory(
                     memory_id=target_id,
                     content=merged,
@@ -372,17 +402,23 @@ async def _retain_memory(
                     keywords=merged_extraction["keywords"],
                     context=context or None,
                     embedding=merged_emb,
+                    commit=False,
                 )
 
                 if updated:
                     # Audit the pre-merge content (excluded from failure surfacing
                     # via _AUDIT_EVENTS) so an LLM merge never silently erases a
                     # memory without a recoverable trace.
-                    _db._record_event(
-                        bank_id,
-                        "memory_dedup_update",
-                        f"{target_id}: {old_content}",
-                    )
+                    try:
+                        _db._record_event(
+                            bank_id,
+                            "memory_dedup_update",
+                            f"{target_id}: {old_content}",
+                            commit=True,
+                        )
+                    except Exception:
+                        _db.conn.rollback()
+                        raise
 
                     result = (
                         f"Memory UPDATED (enriched existing).\n\n"
@@ -541,21 +577,26 @@ async def hybrid_search_memories(
     if query_embedding is None:
         query_embedding = await embedder.embed(query, task_type=TASK_TYPE_QUERY)
 
+    # Each source is fetched deeper than the final page: RRF rewards documents
+    # that appear in both lists, so an item ranked just outside `limit` in each
+    # source (a classic true hit) must still reach the fusion — truncating the
+    # pools at `limit` would drop it before RRF can promote it.
+    fetch_depth = max(limit * 3, 30)
+
     # Time-filtered recall stays on the brute-force path (vec0 cannot filter by
     # timestamp); otherwise use the fast vec_search KNN.
     if time_min or time_max:
         filtered = db.get_embeddings_in_range(
             bank_id, time_min=time_min or None, time_max=time_max or None
         )
-        semantic_results = semantic_search(query_embedding, filtered, top_k=limit)
+        semantic_results = semantic_search(query_embedding, filtered, top_k=fetch_depth)
     else:
-        semantic_results = db.vec_search(query_embedding, bank_id, top_k=limit)
+        semantic_results = db.vec_search(query_embedding, bank_id, top_k=fetch_depth)
 
-    fts_results = db.fts_search(bank_id, query, limit=limit)
-    # FTS hits now carry their timestamp, so filter the window directly rather
-    # than intersecting with search_by_timestamp's latest limit*2 (which
-    # silently dropped in-range but relatively old FTS hits). Bounds inclusive,
-    # ISO 8601 lexicographic compare — same semantics as get_embeddings_in_range.
+    fts_results = db.fts_search(bank_id, query, limit=fetch_depth)
+    # FTS hits carry their timestamp, so the window filters directly. Bounds
+    # inclusive, ISO 8601 lexicographic compare — same semantics as
+    # get_embeddings_in_range.
     if time_min or time_max:
         fts_results = [
             r
@@ -618,13 +659,18 @@ async def KIROK_recall(
     )
 
     # ── Observation-first display (inspired by Mem0 knowledge layer) ──
-    # vec_search_observations falls back to brute force internally, so the
-    # OBS_MIN_SIMILARITY threshold and top_k=5 behave the same with or without
-    # the vec extension.
-    obs_results = _db.vec_search_observations(query_embedding, bank_id, top_k=5)
-    relevant_obs = [
-        o for o in obs_results if o.get("similarity", 0) >= OBS_MIN_SIMILARITY
+    # Hybrid, mirroring the memory side: semantic hits are floored by
+    # OBS_MIN_SIMILARITY, while keyword hits from fts_observations pass
+    # unfloored (a literal term match is independent evidence). Both fuse via
+    # RRF. Without the keyword path, an observation whose cosine lands just
+    # under the floor was unreachable even on an exact keyword match — the
+    # fts_observations index was maintained but never queried.
+    obs_sem = _db.vec_search_observations(query_embedding, bank_id, top_k=5)
+    obs_sem = [
+        o for o in obs_sem if o.get("similarity", 0) >= OBS_MIN_SIMILARITY
     ]
+    obs_kw = _db.fts_search_observations(bank_id, query, limit=5)
+    relevant_obs = reciprocal_rank_fusion(obs_sem, obs_kw, k=60)[:5]
 
     # A memory already folded into a shown observation is redundant as a
     # Supporting Memory — drop it so it isn't re-displayed (and double-counted)
@@ -770,6 +816,17 @@ async def KIROK_consolidate(bank_id: str) -> str:
         return (
             f"Consolidation timed out after {CONSOLIDATION_TIMEOUT} seconds.\n"
             f"Timeout can be configured via KIROK_CONSOLIDATION_TIMEOUT env var."
+        )
+    except Exception as e:
+        # A failed consolidation leaves every source memory unconsolidated (the
+        # LLM layer raises instead of faking an empty result), so the batch is
+        # retried by a later run. Record it so KIROK_stats surfaces the failure.
+        logger.warning("Manual consolidation failed for bank '%s': %s", bank_id, e)
+        _db.record_failure(bank_id, "manual_consolidation", str(e))
+        return (
+            f"Consolidation FAILED: {e}\n"
+            f"No memories were marked consolidated; the batch will be retried "
+            f"on the next consolidation run."
         )
 
 

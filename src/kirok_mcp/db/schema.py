@@ -12,11 +12,16 @@ try:
 except ImportError:  # pragma: no cover - optional accelerator, brute-force fallback
     sqlite_vec = None
 
-from kirok_mcp.db.base import _join_json_list
+from kirok_mcp.db.base import _fts_text, _join_json_list
 from kirok_mcp.embeddings import EMBEDDING_DIM
 
 
 logger = logging.getLogger("kirok.db")
+
+# Bumped when the text fed into the FTS tables changes shape (e.g. the NFKC
+# normalization in _fts_text). A database whose PRAGMA user_version is older
+# gets its FTS tables rebuilt from the source tables on startup.
+FTS_TEXT_VERSION = 1
 
 
 class SchemaMixin:
@@ -146,6 +151,18 @@ class SchemaMixin:
         # Schema migrations for existing databases
         self._migrate_schema()
 
+        # Partial index for the consolidation debounce: every retain runs
+        # COUNT(*) WHERE bank_id = ? AND consolidated_at IS NULL, and the
+        # pending set is small by definition, so this stays tiny and makes
+        # both the count and get_unconsolidated_memories index-only. Created
+        # after _migrate_schema because consolidated_at is a migrated column
+        # and does not exist yet on a freshly created database above.
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_unconsolidated "
+            "ON memories(bank_id, timestamp) "
+            "WHERE consolidated_at IS NULL"
+        )
+
         # sqlite-vec virtual table for fast KNN search (only when the extension
         # loaded). The width is derived from EMBEDDING_DIM so the schema can
         # never drift from the stored vectors.
@@ -188,8 +205,19 @@ class SchemaMixin:
         Each table's DROP → CREATE → backfill runs in a single transaction, so a
         backfill error rolls the DROP back and leaves the old index intact.
         Idempotent: a no-op once both FTS tables are trigram.
+
+        Also rebuilds when ``PRAGMA user_version`` predates FTS_TEXT_VERSION:
+        the indexed text is now NFKC-normalized (see ``_fts_text``), and query
+        normalization only works if the stored copies are normalized too.
+        ``user_version`` is stamped only after both rebuilds succeed, so a
+        failure retries on the next connect.
         """
         assert self.conn is not None
+
+        needs_text_rebuild = (
+            self.conn.execute("PRAGMA user_version").fetchone()[0]
+            < FTS_TEXT_VERSION
+        )
 
         # An explicit BEGIN wraps the DROP + CREATE + backfill in one transaction.
         # Without it, Python's sqlite3 auto-commits DDL (DROP/CREATE), so a
@@ -202,8 +230,8 @@ class SchemaMixin:
         # space-joined text (matching insert_memory), so backfill row-by-row in
         # Python. Malformed JSON on any one row falls back to empty text rather
         # than aborting the whole rebuild.
-        if not self._fts_is_trigram("fts_memories"):
-            logger.warning("Rebuilding fts_memories with the trigram tokenizer")
+        if not self._fts_is_trigram("fts_memories") or needs_text_rebuild:
+            logger.warning("Rebuilding fts_memories (tokenizer/text-normalization migration)")
             rows = self.conn.execute(
                 "SELECT id, bank_id, content, entities, keywords, context "
                 "FROM memories"
@@ -225,10 +253,10 @@ class SchemaMixin:
                         (
                             r["id"],
                             r["bank_id"],
-                            r["content"],
-                            _join_json_list(r["entities"]),
-                            _join_json_list(r["keywords"]),
-                            r["context"],
+                            _fts_text(r["content"]),
+                            _fts_text(_join_json_list(r["entities"])),
+                            _fts_text(_join_json_list(r["keywords"])),
+                            _fts_text(r["context"]),
                         )
                         for r in rows
                     ],
@@ -238,10 +266,15 @@ class SchemaMixin:
                 self.conn.rollback()
                 raise
 
-        # fts_observations: a single content column, so a plain INSERT...SELECT
-        # reproduces the index exactly.
-        if not self._fts_is_trigram("fts_observations"):
-            logger.warning("Rebuilding fts_observations with the trigram tokenizer")
+        # fts_observations: a single content column. Backfilled row-by-row so
+        # the stored copy goes through the same _fts_text normalization as the
+        # live write paths.
+        if not self._fts_is_trigram("fts_observations") or needs_text_rebuild:
+            logger.warning("Rebuilding fts_observations (tokenizer/text-normalization migration)")
+            obs_rows = self.conn.execute(
+                "SELECT id, bank_id, content FROM observations "
+                "WHERE deprecated_at IS NULL"
+            ).fetchall()
             try:
                 self.conn.execute("BEGIN")
                 self.conn.execute("DROP TABLE IF EXISTS fts_observations")
@@ -250,15 +283,24 @@ class SchemaMixin:
                     "id UNINDEXED, bank_id UNINDEXED, content, "
                     "tokenize='trigram')"
                 )
-                self.conn.execute(
+                self.conn.executemany(
                     "INSERT INTO fts_observations (id, bank_id, content) "
-                    "SELECT id, bank_id, content FROM observations "
-                    "WHERE deprecated_at IS NULL"
+                    "VALUES (?, ?, ?)",
+                    [
+                        (r["id"], r["bank_id"], _fts_text(r["content"]))
+                        for r in obs_rows
+                    ],
                 )
                 self.conn.commit()
             except Exception:
                 self.conn.rollback()
                 raise
+
+        # Stamp the text version only after both tables are on the current
+        # normalization, so a partial failure retries on the next connect.
+        if needs_text_rebuild:
+            self.conn.execute(f"PRAGMA user_version = {FTS_TEXT_VERSION}")
+            self.conn.commit()
 
     def _init_vec_schema(self) -> None:
         """Create (or repair) the vec_memories virtual table.

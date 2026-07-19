@@ -1,11 +1,12 @@
-"""Retry wiring for the LLMClient methods that fail open.
+"""Retry wiring for the LLMClient methods.
 
-WHY: consolidate / evaluate_importance / deduplicate swallow errors and fall
-back to a safe default (fail-open). Before v1.2.1 they called the API without
-retry, so a single transient 5xx/429 silently produced the fallback — e.g. a
-duplicate memory stored because deduplication "failed". These tests pin that
-one transient error is retried (the real result comes back), while
-non-transient errors still fail fast into the fallback without retries.
+WHY: evaluate_importance / deduplicate swallow errors and fall back to a safe
+default (fail-open), and consolidate raises (its caller must NOT mark memories
+consolidated on failure — see test_hybrid_improvements). Before v1.2.1 these
+called the API without retry, so a single transient 5xx/429 silently produced
+the fallback — e.g. a duplicate memory stored because deduplication "failed".
+These tests pin that one transient error is retried (the real result comes
+back), while non-transient errors still fail fast without retries.
 """
 
 import unittest
