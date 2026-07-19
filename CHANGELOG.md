@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-07-19
+
+### Added
+- Published to PyPI — install is now a one-liner (`uvx kirok-mcp`), with a Trusted-Publishing GitHub Actions workflow releasing on every GitHub Release
+- `server.json` + README ownership marker for the official MCP Registry (`io.github.tadfuji/kirok-mcp`)
+- The server and `kirok-doctor` also read `~/.kirok/.env`, giving pip/uvx installs (which have no project-level env file) a documented place for `GEMINI_API_KEY`
+
+### Changed
+- README quick start is PyPI-first; the git-clone flow moved to a "From source (development)" section
+
 ## [1.4.0] - 2026-07-19
 
 ### Fixed

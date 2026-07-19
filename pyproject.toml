@@ -1,6 +1,6 @@
 [project]
 name = "kirok-mcp"
-version = "1.4.0"
+version = "1.4.1"
 description = "Persistent memory for AI agents — Retain, Recall, Reflect via MCP"
 readme = "README.md"
 license = "MIT"

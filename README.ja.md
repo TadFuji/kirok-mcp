@@ -5,7 +5,7 @@
 [![tests](https://github.com/TadFuji/kirok-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/TadFuji/kirok-mcp/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org)
-[![Version 1.4.0](https://img.shields.io/badge/version-1.4.0-blue.svg)](CHANGELOG.md)
+[![Version 1.4.1](https://img.shields.io/badge/version-1.4.1-blue.svg)](CHANGELOG.md)
 
 **AIエージェントのための永続メモリ、MCP経由で。** Kirok（記録）は [Model Context Protocol](https://modelcontextprotocol.io) サーバーであり、エージェントに永続的で検索可能なメモリを与えます。重要なことを **Retain**（保存）し、意味検索とキーワード検索を組み合わせたハイブリッド検索で **Recall**（想起）し、蓄積したメモリを再利用可能な洞察へと **Reflect**（省察）で蒸留します。バックグラウンドの統合ループが、生のメモリをより高次の *observations（観察）* へと自律的に変換します。
 
