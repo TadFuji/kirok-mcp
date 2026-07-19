@@ -48,7 +48,35 @@ Storage is a single SQLite database at `~/.kirok/memory.db`. `sqlite-vec` provid
 
 ## 🚀 Quick start
 
-**Requirements:** Python 3.12+, [uv](https://docs.astral.sh/uv/), and a [Gemini API key](https://aistudio.google.com/apikey) (free tier is plenty).
+**Requirements:** Python 3.12+, [uv](https://docs.astral.sh/uv/) (for `uvx`), and a [Gemini API key](https://aistudio.google.com/apikey) (free tier is plenty).
+
+Kirok ships on [PyPI](https://pypi.org/project/kirok-mcp/) — nothing to clone. Put your key in `~/.kirok/.env` (one line: `GEMINI_API_KEY=AIza...`), then verify the setup:
+
+```bash
+uvx --from kirok-mcp kirok-doctor   # offline sanity check
+```
+
+### Connect an MCP client
+
+**Claude Code CLI:**
+
+```bash
+claude mcp add kirok -s user -- uvx kirok-mcp
+```
+
+**Claude Desktop** — edit `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`):
+
+```json
+{
+  "mcpServers": {
+    "kirok": { "command": "uvx", "args": ["kirok-mcp"] }
+  }
+}
+```
+
+Then restart the client. The server reads `GEMINI_API_KEY` from `~/.kirok/.env`; an `env` block in the client config also works and takes precedence.
+
+### From source (development)
 
 ```bash
 git clone https://github.com/TadFuji/kirok-mcp.git
@@ -58,28 +86,7 @@ cp .env.example .env          # then put your key in it: GEMINI_API_KEY=AIza...
 uv run kirok-doctor           # offline sanity check of the whole setup
 ```
 
-### Connect an MCP client
-
-**Claude Desktop** — edit `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`):
-
-```json
-{
-  "mcpServers": {
-    "kirok": {
-      "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/kirok-mcp", "kirok-mcp"]
-    }
-  }
-}
-```
-
-**Claude Code CLI:**
-
-```bash
-claude mcp add kirok -s user -- uv run --directory /absolute/path/to/kirok-mcp kirok-mcp
-```
-
-Then restart the client. `GEMINI_API_KEY` is read from `.env`, so it need not go in the config.
+Point your MCP client at the checkout with `uv run --directory /absolute/path/to/kirok-mcp kirok-mcp` instead of `uvx kirok-mcp`.
 
 > [!TIP]
 > **If `uv run` fails to launch the server** (common on Windows or cloud-synced folders — `uv run` re-syncs on every launch and can hit locked `.venv` files or an in-use entry-point `.exe`), invoke the venv's Python directly to skip the sync entirely:

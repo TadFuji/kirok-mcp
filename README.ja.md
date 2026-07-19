@@ -48,7 +48,35 @@ flowchart TB
 
 ## 🚀 クイックスタート
 
-**必要なもの:** Python 3.12+、[uv](https://docs.astral.sh/uv/)、そして [Gemini API キー](https://aistudio.google.com/apikey)（無料枠で十分です）。
+**必要なもの:** Python 3.12+、[uv](https://docs.astral.sh/uv/)（`uvx` コマンド用）、そして [Gemini API キー](https://aistudio.google.com/apikey)（無料枠で十分です）。
+
+Kirok は [PyPI](https://pypi.org/project/kirok-mcp/) で配布されているため、クローンは不要です。`~/.kirok/.env` にキーを 1 行（`GEMINI_API_KEY=AIza...`）書いてから、セットアップを検証してください。
+
+```bash
+uvx --from kirok-mcp kirok-doctor   # オフラインの健全性チェック
+```
+
+### MCPクライアントと接続する
+
+**Claude Code CLI:**
+
+```bash
+claude mcp add kirok -s user -- uvx kirok-mcp
+```
+
+**Claude Desktop** — `claude_desktop_config.json` を編集します（macOS: `~/Library/Application Support/Claude/`、Windows: `%APPDATA%\Claude\`）。
+
+```json
+{
+  "mcpServers": {
+    "kirok": { "command": "uvx", "args": ["kirok-mcp"] }
+  }
+}
+```
+
+その後クライアントを再起動してください。サーバーは `GEMINI_API_KEY` を `~/.kirok/.env` から読み込みます。クライアント設定の `env` ブロックでも指定でき、その場合はそちらが優先されます。
+
+### ソースから（開発者向け）
 
 ```bash
 git clone https://github.com/TadFuji/kirok-mcp.git
@@ -58,28 +86,7 @@ cp .env.example .env          # 作成した .env にキーを記入: GEMINI_API
 uv run kirok-doctor           # セットアップ全体をオフラインで健全性チェック
 ```
 
-### MCPクライアントと接続する
-
-**Claude Desktop** — `claude_desktop_config.json` を編集します（macOS: `~/Library/Application Support/Claude/`、Windows: `%APPDATA%\Claude\`）。
-
-```json
-{
-  "mcpServers": {
-    "kirok": {
-      "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/kirok-mcp", "kirok-mcp"]
-    }
-  }
-}
-```
-
-**Claude Code CLI:**
-
-```bash
-claude mcp add kirok -s user -- uv run --directory /absolute/path/to/kirok-mcp kirok-mcp
-```
-
-その後クライアントを再起動してください。`GEMINI_API_KEY` は `.env` から読み込まれるため、設定ファイルに書く必要はありません。
+MCP クライアントには `uvx kirok-mcp` の代わりに `uv run --directory /absolute/path/to/kirok-mcp kirok-mcp` を指定してください。
 
 > [!TIP]
 > **`uv run` がサーバーの起動に失敗する場合**（Windows やクラウド同期フォルダでよくある現象です。`uv run` は起動のたびに再同期を行うため、ロックされた `.venv` ファイルや使用中のエントリーポイント `.exe` に引っかかることがあります）、venv の Python を直接呼び出して同期自体を丸ごとスキップできます。
