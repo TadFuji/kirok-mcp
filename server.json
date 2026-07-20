@@ -1,18 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.tadfuji/kirok-mcp",
+  "name": "io.github.TadFuji/kirok-mcp",
   "title": "Kirok Memory",
-  "description": "Persistent memory for AI agents — hybrid semantic + keyword recall, calibrated relevance floors, and autonomous consolidation (Retain / Recall / Reflect)",
+  "description": "Persistent memory for AI agents - hybrid semantic + keyword recall with autonomous consolidation",
   "repository": {
     "url": "https://github.com/TadFuji/kirok-mcp",
     "source": "github"
   },
-  "version": "1.4.1",
+  "version": "1.4.2",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "kirok-mcp",
-      "version": "1.4.1",
+      "version": "1.4.2",
       "transport": {
         "type": "stdio"
       },

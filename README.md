@@ -1,13 +1,13 @@
 # Kirok
 
-<!-- mcp-name: io.github.tadfuji/kirok-mcp -->
+<!-- mcp-name: io.github.TadFuji/kirok-mcp -->
 
 English | [日本語](README.ja.md)
 
 [![tests](https://github.com/TadFuji/kirok-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/TadFuji/kirok-mcp/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org)
-[![Version 1.4.1](https://img.shields.io/badge/version-1.4.1-blue.svg)](CHANGELOG.md)
+[![Version 1.4.2](https://img.shields.io/badge/version-1.4.2-blue.svg)](CHANGELOG.md)
 
 **Persistent memory for AI agents, over MCP.** Kirok (記録, "record") is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives an agent a durable, searchable memory: **Retain** what matters, **Recall** it with hybrid semantic + keyword search, and **Reflect** to distil accumulated memories into reusable insights. A background consolidation loop turns raw memories into higher-level *observations* on its own.
 
@@ -228,7 +228,7 @@ The suite is fully offline — importing `kirok_mcp.server` is side-effect-free 
 
 - [docs/architecture.md](docs/architecture.md) — internal design, data model, consolidation engine
 - [docs/tools-reference.md](docs/tools-reference.md) — full parameter reference for all 19 tools
-- [CHANGELOG.md](CHANGELOG.md) — version history (current: 1.4.1)
+- [CHANGELOG.md](CHANGELOG.md) — version history (current: 1.4.2)
 
 ## 📄 License
 

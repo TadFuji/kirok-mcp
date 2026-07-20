@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-07-20
+
+### Fixed
+- MCP Registry ownership marker now uses the exact GitHub username casing (`io.github.TadFuji/kirok-mcp`) — the registry's PyPI ownership check is case-sensitive, so 1.4.1's lowercase marker failed validation
+
 ## [1.4.1] - 2026-07-19
 
 ### Added
