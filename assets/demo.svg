@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="400" viewBox="0 0 760 400" font-family="'Cascadia Code','SF Mono',Consolas,Menlo,monospace" font-size="14">
+  <defs>
+    <clipPath id="win"><rect x="0" y="0" width="760" height="400" rx="10"/></clipPath>
+  </defs>
+  <g clip-path="url(#win)">
+    <rect width="760" height="400" fill="#16181d"/>
+    <rect width="760" height="34" fill="#22252c"/>
+    <circle cx="20" cy="17" r="6" fill="#ff5f57"/>
+    <circle cx="40" cy="17" r="6" fill="#febc2e"/>
+    <circle cx="60" cy="17" r="6" fill="#28c840"/>
+    <text x="380" y="22" fill="#8b919c" font-size="12" text-anchor="middle">kirok — persistent memory over MCP</text>
+
+    <text x="24" y="64" fill="#7ee787">&gt; KIROK_retain</text>
+    <text x="152" y="64" fill="#c9d1d9">("work-history", "uv sync fails on cloud-synced folders —</text>
+    <text x="166" y="84" fill="#c9d1d9">locked .venv files. Fix: call the venv python directly.")</text>
+    <text x="24" y="108" fill="#8b949e">✓ stored · entities: uv, .venv · deduped against 1 similar memory</text>
+
+    <text x="24" y="148" fill="#7ee787">&gt; KIROK_recall</text>
+    <text x="152" y="148" fill="#c9d1d9">("work-history", "why does uv keep breaking?")</text>
+
+    <text x="24" y="180" fill="#8b919c">── Consolidated Knowledge (Observations) ──</text>
+    <text x="24" y="204" fill="#e3b341">★ uv-managed venvs break under file sync/locking; prefer invoking</text>
+    <text x="40" y="224" fill="#e3b341">the venv interpreter directly for long-running servers.</text>
+
+    <text x="24" y="256" fill="#8b919c">── Supporting Memories ──</text>
+    <text x="24" y="280" fill="#c9d1d9">1. [2026-06-10] uv sync fails on cloud-synced folders — locked</text>
+    <text x="40" y="300" fill="#c9d1d9">.venv files. Fix: call the venv python directly.</text>
+    <text x="24" y="324" fill="#c9d1d9">2. [2026-05-02] "uv run" re-syncs on every launch; a language</text>
+    <text x="40" y="344" fill="#c9d1d9">server holding site-packages makes it fail with os error 5.</text>
+
+    <text x="24" y="376" fill="#58a6ff">semantic + keyword (RRF) · works in any language, 日本語もそのまま</text>
+  </g>
+</svg>

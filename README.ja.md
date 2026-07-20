@@ -9,6 +9,8 @@
 
 **AIエージェントのための永続メモリ、MCP経由で。** Kirok（記録）は [Model Context Protocol](https://modelcontextprotocol.io) サーバーであり、エージェントに永続的で検索可能なメモリを与えます。重要なことを **Retain**（保存）し、意味検索とキーワード検索を組み合わせたハイブリッド検索で **Recall**（想起）し、蓄積したメモリを再利用可能な洞察へと **Reflect**（省察）で蒸留します。バックグラウンドの統合ループが、生のメモリをより高次の *observations（観察）* へと自律的に変換します。
 
+<img src="https://raw.githubusercontent.com/TadFuji/kirok-mcp/main/assets/demo.svg" alt="Kirok のデモ: 記憶を retain し、後からハイブリッド検索で recall する — 統合知識が最初に表示される" width="760">
+
 ## Kirokを選ぶ理由
 
 世間の「エージェントメモリ」の多くは、素朴なベクトルストア（recall がただのコサイン類似度 top-k で、キーワードの裏付けも忘却の仕組みもない）か、エージェントが毎ターン読み直す羽目になる Markdown の山かのどちらかです。Kirok は、検索エンジニアリングをきちんとやり遂げる、自前でホストできる小さなサーバーです。

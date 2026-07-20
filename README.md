@@ -11,6 +11,9 @@ English | [日本語](README.ja.md)
 
 **Persistent memory for AI agents, over MCP.** Kirok (記録, "record") is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives an agent a durable, searchable memory: **Retain** what matters, **Recall** it with hybrid semantic + keyword search, and **Reflect** to distil accumulated memories into reusable insights. A background consolidation loop turns raw memories into higher-level *observations* on its own.
 
+<img src="https://raw.githubusercontent.com/TadFuji/kirok-mcp/main/assets/demo.svg" alt="Kirok demo: retain a memory, then recall it later with hybrid search — consolidated observations shown first" width="760">
+
+
 ## Why Kirok
 
 Most "agent memory" is either a flat vector store (recall is a bare cosine top-k, no keyword grounding, no forgetting) or a pile of markdown the agent has to re-read every turn. Kirok is a small, self-hostable server that does the retrieval engineering properly:
