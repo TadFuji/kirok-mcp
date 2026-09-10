@@ -17,9 +17,9 @@ Kirok provides persistent, cross-session memory via its MCP tools. Your goal is 
 You must integrate memory operations seamlessly into your standard workflow:
 
 1. **Pre-flight Recall (The "Look Before You Leap" Rule)**
-   Before starting any non-trivial task (debugging, writing a new script, planning an architecture), you MUST perform a `KIROK_recall` to check for past decisions, user preferences, or known bugs.
+   When a task may touch past decisions, user preferences, or known bugs — debugging, writing a new script, planning an architecture — run `KIROK_recall` first.
 2. **Post-Task Retain (The "Record the Lesson" Rule)**
-   When a bug is fixed, a preference is stated, or a milestone is reached, you MUST instinctively execute `KIROK_retain`. Do not ask the user for permission to remember important project facts.
+   When a bug is fixed, a preference is stated, or a milestone is reached, record it with `KIROK_retain`. If the fact contains credentials, personal data, or anything the user has not agreed to store, check with them before writing it.
 3. **Periodic Reflection (The "Wisdom" Rule)**
    If a series of complex tasks has been completed, consider using `KIROK_reflect` to synthesize underlying patterns into mental models.
 
@@ -37,7 +37,7 @@ To prevent memory fragmentation (which destroys recall accuracy), keep banks to 
 | `milestones` | Project achievements and work history | "Successfully migrated to Next.js on 2026-04-10" |
 | `scratch` | Temporary or volatile memory | Unfinished ideas, pending tasks that don't need permanent record |
 
-*If you absolutely must create a new bank, its purpose must be broad enough to capture at least 20 future memories. Do not create project-specific banks for tiny side-projects.*
+*Before creating a new bank, check whether an existing one already covers the purpose. Do not create project-specific banks for tiny side-projects.*
 
 ---
 
@@ -49,15 +49,6 @@ When calling `KIROK_retain`, you must optimize for Kirok's internal **Entity Ext
 - **Categorize via Context Parameter**: Always set the `context` parameter to one of: `preference`, `knowledge`, `architecture decision`, `troubleshooting`, or `behavior`.
 - **The Troubleshooting Formula**: When storing fixed errors, use this exact structure in the content:
   *(1) Symptom  →  (2) Root Cause  →  (3) Fix  →  (4) Prevention*
-
-**Example of an excellent Retain:**
-```python
-KIROK_retain(
-    bank_id="troubleshooting",
-    content="Symptom: The login API was throwing a 500. Root Cause: The JWT token was not being properly cast to a string before hashing. Fix: Added str() wrapper around token payload. Prevention: Enforce type-checking in the middle-ware.",
-    context="troubleshooting"
-)
-```
 
 ---
 
