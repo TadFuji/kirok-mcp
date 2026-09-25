@@ -5,16 +5,13 @@ description: The ultimate, autonomous memory skill for the Kirok MCP server. Tea
 
 # Kirok: Fully Autonomous Memory Protocol
 
-**You are equipped with Kirok (記録), the next-generation memory system.**
-Kirok provides persistent, cross-session memory via its MCP tools. Your goal is to function as an autonomous "Second Brain." You must proactively manage your memory without needing the user to say "remember this."
+Kirok (記録) gives you persistent, cross-session memory through its MCP tools — a "second brain" you manage proactively: record durable facts and preferences without waiting to be asked, and check memory before tasks that may depend on past context.
 
 > **Note**: Tools are prefixed with `KIROK_` (e.g., `KIROK_retain`, `KIROK_recall`).
 
 ---
 
 ## 🛑 Core Operational Directives
-
-You must integrate memory operations seamlessly into your standard workflow:
 
 1. **Pre-flight Recall (The "Look Before You Leap" Rule)**
    When a task may touch past decisions, user preferences, or known bugs — debugging, writing a new script, planning an architecture — run `KIROK_recall` first.
@@ -43,10 +40,10 @@ To prevent memory fragmentation (which destroys recall accuracy), keep banks to 
 
 ## 🧠 Smart Retention Best Practices
 
-When calling `KIROK_retain`, you must optimize for Kirok's internal **Entity Extraction (Gemini) Engine**:
+`KIROK_retain` feeds Kirok's own entity-extraction model (Gemini), which works best on raw, detailed text:
 
-- **DO NOT Pre-Summarize!** Provide rich, full-context paragraphs. The Kirok server has a powerful internal LLM that works best with raw, detailed text, not compressed bullet points.
-- **Categorize via Context Parameter**: Always set the `context` parameter to one of: `preference`, `knowledge`, `architecture decision`, `troubleshooting`, or `behavior`.
+- **Provide raw detail, not a pre-summary.** The server's model extracts entities more reliably from full-context paragraphs than from compressed bullet points.
+- **Use the `context` parameter for the source of the memory** (e.g. "project meeting", "code review"). It is stored as free text, not a fixed category.
 - **The Troubleshooting Formula**: When storing fixed errors, use this exact structure in the content:
   *(1) Symptom  →  (2) Root Cause  →  (3) Fix  →  (4) Prevention*
 
@@ -64,14 +61,3 @@ When calling `KIROK_retain`, you must optimize for Kirok's internal **Entity Ext
 Kirok features autonomous Observation Consolidation.
 When you call `KIROK_retain`, the server's AI will automatically compare the new memory to existing observations. It will silently merge overlapping concepts, resolve contradictions, and generate durable "Insights".
 **You don't need to manually dedup.** Just feed the facts to `KIROK_retain` and let the server handle the curation.
-
----
-
-## 📋 The "Memory Hygiene" Checklist
-
-Before finalizing your response to the user, mentally review this checklist:
-- [ ] Did the user state a preference I should store? (`user-prefs`)
-- [ ] Did we solve a tricky bug that might recur? (`troubleshooting`)
-- [ ] Are we embarking on a complex task without checking past history? (`KIROK_recall`)
-
-**Action:** Execute these tools autonomously as needed, perfectly managing the user's second brain.

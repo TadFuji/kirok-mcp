@@ -493,7 +493,8 @@ async def KIROK_retain(
     Args:
         bank_id: Memory bank identifier (e.g. 'antigravity', 'user-prefs').
         content: The information to remember.
-        context: Optional context about the source (e.g. 'project meeting').
+        context: Optional free-text source of this memory (e.g. 'project meeting',
+            'code review'). Stored and displayed verbatim, not a fixed category.
         timestamp: Optional ISO 8601 timestamp. Defaults to now.
     """
     return await _retain_memory(
