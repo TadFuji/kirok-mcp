@@ -35,3 +35,6 @@ AI_HANDOFF.md
 # Internal planning/spec artifacts (kept local, not for downstream consumers)
 docs/superpowers/
 archive/
+
+# Claude Code personal permission rules (may contain secrets)
+.claude/settings.local.json
